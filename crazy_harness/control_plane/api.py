@@ -24,7 +24,7 @@ from crazy_harness.control_plane.views import (
     SnapshotView,
 )
 
-CONTROL_PLANE_VERSION = "0.2.0-dev"
+CONTROL_PLANE_VERSION = "0.3.0-dev"
 
 
 class FaultRequest(BaseModel):

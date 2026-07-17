@@ -66,6 +66,22 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "repo.inspect": "仓库检查 / repo.inspect",
   "repo.edit": "受控修改 / repo.edit",
   "test.verify": "测试验证 / test.verify",
+  "research.browse": "浏览器研究 / research.browse",
+  "research.cite": "证据引用 / research.cite",
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  "skill.activate": "激活技能 / skill.activate",
+  "capability.search": "检索能力 / capability.search",
+  "repo.read": "读取仓库文件 / repo.read",
+  "repo.write": "写入仓库文件 / repo.write",
+  "repo.replace": "替换仓库内容 / repo.replace",
+  "test.run": "运行真实测试 / test.run",
+  "repo.diff": "检查仓库差异 / repo.diff",
+  "research.sources.list": "列出证据源 / research.sources.list",
+  "research.source.open": "浏览器打开证据源 / research.source.open",
+  "research.report.write": "写入研究报告 / research.report.write",
+  "research.report.validate": "校验研究报告 / research.report.validate",
 };
 
 export function agentLabel(value: string): string {
@@ -92,4 +108,9 @@ export function contentLabel(value: string | null | undefined): string {
 export function capabilityLabel(value: string | null | undefined): string {
   if (!value) return "就绪 / Ready";
   return CAPABILITY_LABELS[value] ?? value;
+}
+
+export function toolLabel(value: string | null | undefined): string {
+  if (!value) return "未知工具 / Unknown tool";
+  return TOOL_LABELS[value] ?? value;
 }

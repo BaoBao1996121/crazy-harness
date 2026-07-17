@@ -62,6 +62,27 @@ class SkillCatalog:
     def entries(self) -> tuple[SkillCatalogEntry, ...]:
         return tuple(self._records[name].entry for name in self.names())
 
+    def select(self, names: Sequence[str]) -> "SkillCatalog":
+        """Return a task-specific catalog without exposing unrelated Skill metadata."""
+
+        requested = tuple(dict.fromkeys(names))
+        missing = tuple(name for name in requested if name not in self._records)
+        if missing:
+            joined = ", ".join(repr(name) for name in missing)
+            raise SkillNotFoundError(f"unknown or unauthorized Skill: {joined}")
+        requested_set = set(requested)
+        diagnostics = tuple(
+            item
+            for item in self.diagnostics
+            if item.skill_name is None or item.skill_name in requested_set
+        )
+        return SkillCatalog(
+            {name: self._records[name] for name in requested},
+            diagnostics,
+            max_skill_bytes=self.max_skill_bytes,
+            max_resources=self.max_resources,
+        )
+
     def audit_manifest(self) -> dict[str, object]:
         """Return body-free, stable evidence of the resolved catalog and diagnostics."""
 
@@ -81,7 +102,7 @@ class SkillCatalog:
         if record is None:
             raise SkillNotFoundError(f"unknown or unauthorized Skill: {name}")
         raw = _read_bounded(record.skill_file, self.max_skill_bytes)
-        source_hash = hashlib.sha256(raw).hexdigest()
+        source_hash = _skill_source_hash(raw)
         if source_hash != record.source_hash:
             raise SkillChangedError(
                 f"Skill {name!r} changed after discovery; refresh the catalog before activation"
@@ -221,7 +242,7 @@ class FileSystemSkillLoader:
                         entry=entry,
                         source=source,
                         skill_file=resolved,
-                        source_hash=hashlib.sha256(raw).hexdigest(),
+                        source_hash=_skill_source_hash(raw),
                     )
                 )
             if catalog_limit_reached:
@@ -276,7 +297,7 @@ def _read_bounded(path: Path, limit: int) -> bytes:
 
 
 def _parse_skill(path: Path, raw: bytes) -> tuple[SkillMetadata, str]:
-    text = raw.decode("utf-8-sig")
+    text = _normalize_newlines(raw.decode("utf-8-sig"))
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         raise SkillValidationError("SKILL.md must start with YAML frontmatter")
@@ -293,6 +314,15 @@ def _parse_skill(path: Path, raw: bytes) -> tuple[SkillMetadata, str]:
             f"frontmatter name {metadata.name!r} must match directory {path.parent.name!r}"
         )
     return metadata, body
+
+
+def _skill_source_hash(raw: bytes) -> str:
+    canonical = _normalize_newlines(raw.decode("utf-8-sig")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _list_resources(skill_root: Path, *, limit: int) -> tuple[str, ...]:

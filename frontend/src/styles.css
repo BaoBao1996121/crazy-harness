@@ -802,12 +802,18 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
 .run-dialog form { display: flex; flex-direction: column; gap: 16px; padding: 20px; }
 .run-mode-fieldset { min-width: 0; padding: 0; border: 0; }
 .run-mode-fieldset legend { margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
-.run-mode-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.run-mode-choice button { min-height: 62px; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--cyan); background: #ffffff; text-align: left; cursor: pointer; }
-.run-mode-choice button.active { border-color: #8fb6b4; background: #eaf4f1; box-shadow: inset 0 0 0 1px rgba(104, 151, 148, 0.12); }
-.run-mode-choice button > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.run-mode-choice strong { color: var(--text); font-size: 10px; }
-.run-mode-choice small { color: var(--faint); font-size: 8px; line-height: 1.35; }
+.run-mode-choice,
+.task-pack-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.run-mode-choice button,
+.task-pack-choice button { min-height: 62px; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--cyan); background: #ffffff; text-align: left; cursor: pointer; }
+.run-mode-choice button.active,
+.task-pack-choice button.active { border-color: #8fb6b4; background: #eaf4f1; box-shadow: inset 0 0 0 1px rgba(104, 151, 148, 0.12); }
+.run-mode-choice button > span,
+.task-pack-choice button > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.run-mode-choice strong,
+.task-pack-choice strong { color: var(--text); font-size: 10px; }
+.run-mode-choice small,
+.task-pack-choice small { color: var(--faint); font-size: 8px; line-height: 1.35; }
 .run-dialog label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .run-dialog input,
 .run-dialog textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); background: #ffffff; }
@@ -897,7 +903,8 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
   .inspector-content { padding: 14px; }
   .metric-grid.capability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .model-choice { grid-template-columns: 1fr; }
-  .run-mode-choice { grid-template-columns: 1fr; }
+  .run-mode-choice,
+  .task-pack-choice { grid-template-columns: 1fr; }
   .run-dialog form { padding: 16px; }
   .peer-route { grid-template-columns: 64px 1fr 64px; }
 }

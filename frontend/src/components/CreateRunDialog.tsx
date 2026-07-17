@@ -1,7 +1,13 @@
-import { Bot, Cpu, Play, Users, X } from "lucide-react";
+import { Bot, Cpu, Play, Search, Users, Wrench, X } from "lucide-react";
 import { useState } from "react";
 
 import type { TaskRequest } from "../api/client";
+import {
+  singleTaskPackDefaults,
+  singleTaskPackOptions,
+  taskPackForExecution,
+  type SingleTaskPackId,
+} from "../lib/taskpacks";
 
 interface CreateRunDialogProps {
   open: boolean;
@@ -20,17 +26,22 @@ export function CreateRunDialog({
 }: CreateRunDialogProps) {
   const [executionMode, setExecutionMode] = useState<TaskRequest["execution_mode"]>("single");
   const [modelMode, setModelMode] = useState<TaskRequest["model_mode"]>("scripted");
-  const [title, setTitle] = useState("修复一次可回收仓库 / Repair a disposable repository");
-  const [brief, setBrief] = useState(
-    "定位实现缺陷，只修改允许的实现文件，运行真实测试并用差异证据证明结果。 / Find the implementation defect, edit only allowlisted files, run real tests, and prove the result with a diff.",
-  );
+  const [taskPack, setTaskPack] = useState<SingleTaskPackId>("repo-maintainer");
+  const [title, setTitle] = useState(() => singleTaskPackDefaults("repo-maintainer").title);
+  const [brief, setBrief] = useState(() => singleTaskPackDefaults("repo-maintainer").brief);
   if (!open) return null;
+
+  const chooseTaskPack = (id: SingleTaskPackId) => {
+    const defaults = singleTaskPackDefaults(id);
+    setTaskPack(id);
+    setTitle(defaults.title);
+    setBrief(defaults.brief);
+  };
 
   const chooseExecutionMode = (mode: TaskRequest["execution_mode"]) => {
     setExecutionMode(mode);
     if (mode === "single") {
-      setTitle("修复一次可回收仓库 / Repair a disposable repository");
-      setBrief("定位实现缺陷，只修改允许的实现文件，运行真实测试并用差异证据证明结果。 / Find the implementation defect, edit only allowlisted files, run real tests, and prove the result with a diff.");
+      chooseTaskPack(taskPack);
       return;
     }
     setModelMode("scripted");
@@ -62,7 +73,7 @@ export function CreateRunDialog({
               brief,
               execution_mode: executionMode,
               model_mode: executionMode === "team" ? "scripted" : modelMode,
-              task_pack: executionMode === "single" ? "repo-maintainer" : "resident-demo",
+              task_pack: taskPackForExecution(executionMode, taskPack),
             }).then(onClose);
           }}
         >
@@ -79,6 +90,27 @@ export function CreateRunDialog({
               </button>
             </div>
           </fieldset>
+          {executionMode === "single" && (
+            <fieldset className="run-mode-fieldset">
+              <legend>任务包 / TaskPack</legend>
+              <div className="task-pack-choice">
+                {singleTaskPackOptions().map((option) => {
+                  const Icon = option.id === "repo-maintainer" ? Wrench : Search;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={taskPack === option.id ? "active" : ""}
+                      onClick={() => chooseTaskPack(option.id)}
+                    >
+                      <Icon size={17} aria-hidden="true" />
+                      <span><strong>{option.label}</strong><small>{option.detail}</small></span>
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
           <label>
             <span>任务标题 / Task title</span>
             <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required />

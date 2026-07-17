@@ -558,7 +558,7 @@ export interface components {
              */
             execution_mode: "team" | "single";
             /** Task Pack */
-            task_pack?: ("resident-demo" | "repo-maintainer") | null;
+            task_pack?: ("resident-demo" | "repo-maintainer" | "evidence-research") | null;
         };
         /** ValidationError */
         ValidationError: {

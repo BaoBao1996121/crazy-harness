@@ -9,7 +9,7 @@ def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json()["version"] == "v0.2.0-dev"
+    assert response.json()["version"] == "v0.3.0-dev"
 
 
 def test_http_snapshot_and_finite_sse_feed_share_the_same_event_cursor(tmp_path):

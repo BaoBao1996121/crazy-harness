@@ -25,7 +25,7 @@ from crazy_harness.core.events import Event
 from crazy_harness.core.models import DeepSeekOpenAIProvider, FakeModelProvider, ModelProvider
 from crazy_harness.core.runtime import DurableMailbox
 from crazy_harness.core.runtime.mailbox import Delivery
-from crazy_harness.taskpacks import RepoMaintainerTaskPack
+from crazy_harness.taskpacks import EvidenceResearchTaskPack, RepoMaintainerTaskPack, TaskPack
 
 
 class TaskRequest(BaseModel):
@@ -35,7 +35,7 @@ class TaskRequest(BaseModel):
     brief: str = Field(min_length=1, max_length=4000)
     model_mode: Literal["scripted", "deepseek"] = "scripted"
     execution_mode: Literal["team", "single"] = "team"
-    task_pack: Literal["resident-demo", "repo-maintainer"] | None = None
+    task_pack: Literal["resident-demo", "repo-maintainer", "evidence-research"] | None = None
 
 
 class RunCreated(BaseModel):
@@ -157,7 +157,7 @@ class ResidentRuntime:
         ("scout", "Scout / 侦察", ["evidence.collect", "peer.respond"]),
         ("builder", "Builder / 构建", ["artifact.compose", "peer.request"]),
         ("reviewer", "Reviewer / 审查", ["artifact.review", "evidence.verify"]),
-        ("generalist", "Generalist / 通用执行", ["repo.inspect", "repo.edit", "test.verify"]),
+        ("generalist", "Generalist / 通用执行", ["repo.inspect", "repo.edit", "test.verify", "research.browse", "research.cite"]),
     )
 
     def __init__(self, data_dir: Path, *, model_factory: ModelFactory | None = None) -> None:
@@ -170,7 +170,12 @@ class ResidentRuntime:
         self.context = PersistentContextCompiler(self.store, self.artifacts)
         self.scheduler = ResidentScheduler(self.store, self.faults)
         self.repo_maintainer_pack = RepoMaintainerTaskPack(self.data_dir)
-        self._model_factory = model_factory or self._default_model_factory
+        self.evidence_research_pack = EvidenceResearchTaskPack(self.data_dir)
+        self.task_packs: dict[str, TaskPack] = {
+            self.repo_maintainer_pack.task_pack_id: self.repo_maintainer_pack,
+            self.evidence_research_pack.task_pack_id: self.evidence_research_pack,
+        }
+        self._model_factory = model_factory
         self._single_models: dict[str, ModelProvider] = {}
         self._single_loops: dict[str, AgentLoop] = {}
         self.mailboxes: dict[str, DurableMailbox] = {
@@ -255,13 +260,15 @@ class ResidentRuntime:
         return RunCreated(run_id=run_id, task_id=task_id)
 
     def _submit_single_task(self, request: TaskRequest) -> RunCreated:
-        if request.task_pack not in {None, "repo-maintainer"}:
-            raise ValueError("single mode currently supports only the repo-maintainer task pack")
+        task_pack_id = request.task_pack or self.repo_maintainer_pack.task_pack_id
+        pack = self.task_packs.get(task_pack_id)
+        if pack is None:
+            raise ValueError(f"unsupported single-agent task pack: {task_pack_id}")
         if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
             raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
         run_id = f"run_{uuid4().hex[:12]}"
         task_id = f"task_{uuid4().hex[:12]}"
-        prepared = self.repo_maintainer_pack.prepare(run_id)
+        prepared = pack.prepare(run_id)
         created = self.store.append(
             Event(
                 run_id=run_id,
@@ -273,13 +280,13 @@ class ResidentRuntime:
                     "brief": request.brief,
                     "model_mode": request.model_mode,
                     "execution_mode": "single",
-                    "task_pack": "repo-maintainer",
+                    "task_pack": task_pack_id,
                     "workspace_path": str(prepared.workspace),
-                    "behavior_version": "v0.2.0-dev",
+                    "behavior_version": "v0.3.0-dev",
                 },
             )
         )
-        contract = self.repo_maintainer_pack.assignment_contract()
+        contract = pack.assignment_contract()
         assignment = self.store.append(
             Event(
                 run_id=run_id,
@@ -288,18 +295,18 @@ class ResidentRuntime:
                 source="runtime.single",
                 payload={
                     "assignment_id": task_id,
-                    "agent_id": "generalist",
+                    "agent_id": pack.agent_id,
                     "goal": contract.goal,
                     "exit_criteria": list(contract.exit_criteria),
                     "contract_version": contract.version,
                     "contract": contract.model_dump(mode="json"),
-                    "receiver": "generalist",
+                    "receiver": pack.agent_id,
                     "workspace_path": str(prepared.workspace),
                 },
                 causation_id=created.id,
             )
         )
-        self._deliver("generalist", assignment, delivery_id=f"single:{task_id}:turn:1")
+        self._deliver(pack.agent_id, assignment, delivery_id=f"single:{task_id}:turn:1")
         return RunCreated(run_id=run_id, task_id=task_id)
 
     def run_until_idle(self, *, max_steps: int = 100) -> int:
@@ -361,12 +368,13 @@ class ResidentRuntime:
             )
         )
 
-    @staticmethod
-    def _default_model_factory(model_mode: str) -> ModelProvider:
+    def _model_for(self, model_mode: str, task_pack: TaskPack) -> ModelProvider:
+        if self._model_factory is not None:
+            return self._model_factory(model_mode)
         if model_mode == "deepseek":
             return DeepSeekOpenAIProvider()
         if model_mode == "scripted":
-            return FakeModelProvider(RepoMaintainerTaskPack.scripted_responses())
+            return FakeModelProvider(task_pack.scripted_responses())
         raise ValueError(f"unsupported model mode: {model_mode}")
 
     def _single_agent_step(self, delivery: Delivery) -> None:
@@ -472,25 +480,29 @@ class ResidentRuntime:
         created = next((event for event in events if event.type == "run.created"), None)
         if created is None:
             raise RuntimeError(f"single-agent task has no run.created event: {trigger.task_id}")
-        if created.payload.get("task_pack") != "repo-maintainer":
-            raise RuntimeError(f"unsupported task pack: {created.payload.get('task_pack')}")
+        task_pack_id = str(
+            created.payload.get("task_pack", self.repo_maintainer_pack.task_pack_id)
+        )
+        pack = self.task_packs.get(task_pack_id)
+        if pack is None:
+            raise RuntimeError(f"unsupported task pack: {task_pack_id}")
         assignment = next((event for event in events if event.type == "assignment.created"), None)
         contract_payload = assignment.payload.get("contract") if assignment is not None else None
-        # v0.1 运行没有保存完整 Contract，保留明确的兼容回退；v0.2 新任务一律恢复持久版本。
+        # New runs persist the exact Contract; the fallback keeps legacy runs recoverable.
         contract = (
             AssignmentContract.model_validate(contract_payload)
             if contract_payload is not None
-            else self.repo_maintainer_pack.assignment_contract()
+            else pack.assignment_contract()
         )
         model_mode = str(created.payload.get("model_mode", "scripted"))
         model = self._single_models.get(trigger.task_id)
         if model is None:
-            model = self._model_factory(model_mode)
+            model = self._model_for(model_mode, pack)
             self._single_models[trigger.task_id] = model
-        loop = self.repo_maintainer_pack.build_loop(
+        loop = pack.build_loop(
             run_id=trigger.run_id,
             task_id=trigger.task_id,
-            brief=str(created.payload.get("brief", "Repair the repository and prove the result.")),
+            brief=str(created.payload.get("brief", contract.goal)),
             model_mode=model_mode,
             model=model,
             event_log=self.store,

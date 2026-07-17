@@ -18,7 +18,7 @@ from crazy_harness.core.capabilities import (
     CapabilitySearchService,
 )
 from crazy_harness.core.context.builder import ContextBuilder
-from crazy_harness.core.events import Event
+
 from crazy_harness.core.models import ModelProvider
 from crazy_harness.core.prompts import PromptPack, RuntimeManifest
 from crazy_harness.core.skills import (
@@ -32,6 +32,7 @@ from crazy_harness.core.skills import (
 from crazy_harness.core.tools import ToolRegistry
 from crazy_harness.core.tools.pipeline import OperationLedger, ToolPipeline
 from crazy_harness.core.tools.policy import PolicyContext, ToolPolicy
+from crazy_harness.taskpacks.base import record_skill_catalog
 from crazy_harness.taskpacks.repo_tools import build_repo_tools
 
 _FIXED_SOURCE = """def clamp(value: int, lower: int, upper: int) -> int:
@@ -118,7 +119,8 @@ class RepoMaintainerTaskPack:
         return prepared
 
     def build_skills(self) -> SkillCatalog:
-        return FileSystemSkillLoader().discover(self.skill_sources, agent_id=self.agent_id)
+        discovered = FileSystemSkillLoader().discover(self.skill_sources, agent_id=self.agent_id)
+        return discovered.select(("repo-maintainer",))
 
     def build_tools(
         self,
@@ -161,7 +163,14 @@ class RepoMaintainerTaskPack:
         prepared = self.prepare(run_id)
         skills = self.build_skills()
         tools = self.build_tools(prepared, skills=skills)
-        self._record_skill_catalog(event_log, run_id=run_id, task_id=task_id, skills=skills)
+        record_skill_catalog(
+            event_log,
+            run_id=run_id,
+            task_id=task_id,
+            agent_id=self.agent_id,
+            source="taskpack.repo-maintainer",
+            skills=skills,
+        )
         # 新任务由 TaskPack 生成 Contract；恢复旧任务时必须使用事件中固化的版本。
         contract = assignment_contract or self.assignment_contract()
         plan = LocalPlan(
@@ -266,38 +275,6 @@ class RepoMaintainerTaskPack:
                 for name in (CAPABILITY_SEARCH_TOOL_NAME, SKILL_ACTIVATE_TOOL_NAME)
                 if tools.has(name)
             ),
-        )
-
-    @staticmethod
-    def _record_skill_catalog(
-        event_log,
-        *,
-        run_id: str,
-        task_id: str,
-        skills: SkillCatalog,
-    ) -> None:
-        manifest = skills.audit_manifest()
-        existing = [
-            event
-            for event in event_log.read_all(task_id=task_id)
-            if event.type == "skill.catalog.compiled"
-        ]
-        if existing and existing[-1].payload.get("manifest_hash") == manifest["manifest_hash"]:
-            return
-        parent = event_log.last(task_id=task_id)
-        event_log.append(
-            Event(
-                run_id=run_id,
-                task_id=task_id,
-                type="skill.catalog.compiled",
-                source="taskpack.repo-maintainer",
-                payload={
-                    "agent_id": RepoMaintainerTaskPack.agent_id,
-                    "disclosure": "metadata_then_explicit_activation",
-                    **manifest,
-                },
-                causation_id=parent.id if parent is not None else None,
-            )
         )
 
     @staticmethod
