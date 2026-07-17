@@ -1,0 +1,72 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+npm-debug.log*
+
+# Runtime state and generated evidence
+runs/
+output/
+outputs/
+.playwright-cli/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local research material and upstream source snapshots
+research_sources/
+research/raw_feishu/
+research/source_notes/
+
+# Local editor and OS state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+# Public repository allowlist
+# These files remain useful locally but contain private research, machine paths,
+# chat history, or environment-specific evidence and must never enter Git.
+PROJECT_PROGRESS.md
+research/
+notes/
+work/debug-team/
+
+docs/*
+!docs/README.md
+!docs/assets/
+!docs/assets/**
+!docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md
+!docs/ARCHITECTURE_WALKTHROUGH.md
+!docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md
+!docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md
+!docs/HARNESS_CORE_ESSENTIALS.md
+!docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md
+!docs/PUBLIC_REPO_MANIFEST.md
+!docs/RESIDENT_A2A_V01_CHECKPOINT.md
+!docs/THIRD_PARTY_LICENSE_MATRIX.md

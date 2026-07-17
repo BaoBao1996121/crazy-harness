@@ -1,0 +1,8 @@
+service: hello-crazy-api
+world: cicd
+checks:
+  - test.run
+release:
+  image: crazy-lab/hello-crazy-api:dev
+  deploy_target: volcengine-vke-dry-run
+  namespace: crazy-dev

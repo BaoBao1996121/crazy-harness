@@ -1,0 +1,33 @@
+name: Mechanism proposal
+description: Propose a Harness mechanism, adapter, TaskPack, or evaluation
+title: "[Proposal] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and user
+      description: Who needs this, what fails today, and why is it a Harness concern?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: Identify the Port/Adapter or Core boundary, trust model, durable facts, and failure paths.
+    validations:
+      required: true
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: Evaluation plan
+      description: State the baseline, dataset/cases, scorers, cost, latency, and rollback criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Smallest real vertical
+      description: What is the minimum end-to-end implementation that proves the idea without replacing the Core loop?
+    validations:
+      required: true
