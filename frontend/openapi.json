@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.2.0-dev"
+    "version": "0.3.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -1367,7 +1367,8 @@
                 "type": "string",
                 "enum": [
                   "resident-demo",
-                  "repo-maintainer"
+                  "repo-maintainer",
+                  "evidence-research"
                 ]
               },
               {

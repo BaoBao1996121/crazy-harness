@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 
 import type { EventRecord } from "../api/client";
 import { eventMeta, selectVisibleEvents, shortId, type TrustBoundary } from "../lib/events";
-import { boundaryLabel } from "../lib/i18n";
+import { boundaryLabel, toolLabel } from "../lib/i18n";
 
 const BOUNDARY_ICON: Record<TrustBoundary, LucideIcon> = {
   proposal: Sparkles,
@@ -77,6 +77,7 @@ export function Timeline({
         ) : visible.map((record) => {
           const type = record.event.type;
           const meta = eventMeta(type);
+          const toolName = eventToolName(record);
           const Icon = BOUNDARY_ICON[meta.boundary];
           const eventId = record.event.id ?? String(record.cursor);
           const time = record.event.created_at
@@ -92,7 +93,7 @@ export function Timeline({
               <span className="cursor">#{String(record.cursor).padStart(3, "0")}</span>
               <span className={`timeline-node ${meta.boundary}`}><Icon size={14} /></span>
               <span className="timeline-copy">
-                <strong>{meta.label}</strong>
+                <strong>{toolName ? `${meta.label} · ${toolLabel(toolName)}` : meta.label}</strong>
                 <span><code>{type}</code> · {record.event.source}</span>
               </span>
               <span className={`boundary-tag ${meta.boundary}`} title={boundaryLabel(meta.boundary)}>{boundaryLabel(meta.boundary).split(" / ")[0]}</span>
@@ -115,4 +116,15 @@ function TimelineEmpty() {
       <span>常驻智能体已经就绪 / Runtime identities are ready.</span>
     </div>
   );
+}
+
+function eventToolName(record: EventRecord): string | null {
+  const payload = record.event.payload as Record<string, unknown>;
+  if (typeof payload.tool_name === "string") return payload.tool_name;
+  const result = payload.result;
+  if (result && typeof result === "object" && "name" in result) {
+    const name = (result as Record<string, unknown>).name;
+    return typeof name === "string" ? name : null;
+  }
+  return null;
 }

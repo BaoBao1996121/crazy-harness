@@ -219,19 +219,20 @@ CompletionGate 不相信 Agent 自述，只读取 Evidence。
 - Evidence Research Golden Task v1。
 
 准出：同一个 Agent Runtime 可在不改 Core 的情况下完成 Repo 与 Research 两类任务；危险 Tool 默认不可见或需审批。
-实施状态（2026-07-17，第四纵切）：`CapabilityCompiler` 已按 ToolPolicy 权限先过滤，再在小目录完整披露、大目录检索披露之间选择；每轮 `CapabilityManifest` 持久记录 authorized/disclosed/withheld/excluded、选择原因、定义哈希、清单哈希和搜索来源事件。未披露工具即使被模型手写，也会在 AgentLoop 授权边界拒绝。
+实施状态（2026-07-17，第五纵切）：`CapabilityCompiler` 已按 ToolPolicy 权限先过滤，再在小目录完整披露、大目录检索披露之间选择；每轮 `CapabilityManifest` 持久记录 authorized/disclosed/withheld/excluded、选择原因、定义哈希、清单哈希和搜索来源事件。未披露工具即使被模型手写，也会在 AgentLoop 授权边界拒绝。
 
 交互式大目录链路已经真实接线：`capability.search` 是普通只读 Tool，只在授权集合中返回名称、类型、短描述和标签，不返回完整 Schema；成功的 `tool.completed` 会让命中的能力在下一轮以 `explicit_recall` 进入 Manifest，再通过模型原生 Tool Calling 和统一 ToolPipeline 执行。AgentLoop 的 RuntimeManifest 与原生 Tool Schema 现在共用同一披露集合，修复了“Schema 被隐藏但系统提示词仍泄露完整工具目录”的问题。确定性演示 `run_7521d9b15a2a` 经持久 Mailbox、Scheduler 和 canonical AgentLoop 完成 5 次搜索、5 次真实工具调用、11 次模型调用和 11 份 Manifest，最终 `run.succeeded`；Control Room 可显示每个召回工具对应的来源 Event。
 
 MCP 首个真实协议纵切也已接线：Core 只依赖自有 `MCPClientPort`，官方稳定 Python SDK 作为可替换 Adapter；`MCPToolMount` 先按本地 Grant 过滤，再以 `mcp.<server>.<tool>` 命名空间注册到 Catalog 和 ToolRegistry。完整 Schema 只有被 `capability.search` 召回后才进入下一轮 Manifest，执行继续经过原生 Command Validation、ToolPolicy、Hook、OperationLedger 和预算。演示 `run_6ead89282b80` 使用官方 FastMCP memory transport 完成真实 `tools/list`、延迟披露和 `tools/call`，3 次 Agent 调度、3 次模型调用、59 条持久事件后 `run.succeeded`；Control Room 标出“远端工具 / MCP · mcp:docs”和召回来源 Event。
 
 Agent Skills 第四纵切已经接入 canonical AgentLoop：`FileSystemSkillLoader` 只接受显式配置且标记可信的 global/project/agent roots，同名 Skill 按 `agent > project > global`、priority、source_id 确定性决胜；未信任来源在 metadata 曝光前拒绝，重复 source_id 直接失败。目录只把 name、description、scope 和 source 放进 RuntimeManifest；模型显式调用只读 `skill.activate` 后，正文才随 `tool.completed` 持久化，并在后续轮次进入 latest-only 保护槽。发现与激活之间的文件 hash 不一致会拒绝使用；`allowed-tools` 永远只是认知提示，不改变 ToolPolicy。默认 Repo Maintainer run `run_34af94cedc50` 真实经过 7 次模型调用、149 条事件和一次 Skill 激活后成功准出；Control Room 可显示目录存根、激活状态、正文长度/Hash 和来源，但不显示正文。
+Evidence Research 第五纵切证明 TaskPack 不只是代码业务的别名：`ResidentRuntime` 通过自有 `TaskPack` Port 注册 Repo 与 Research，`run.created` 持久化 Pack ID、brief 与 workspace，重启后按原 Pack 重建 Skill、工具、Contract 与专用 Gate。Research 先列出三份来源 metadata，再由真实 Playwright Chromium 按 `source_id` 打开本地 allowlisted HTML，保存 screenshot、DOM、console 与 network；`report.validate` 机械检查章节、规范引用、多源覆盖和 SHA-256，专用 CompletionGate 再把提交 Artifact 绑定到最新校验结果。通过 Control Room 提交的 run `run_d1b2f622fe00` 产生 170 条持久事件，完成三次浏览器取证、报告写入、引用校验和 `run.succeeded`。同一 Core 下 Repo/Research 两条 Scripted Golden Task 均已通过。
 
 当前检索仍是确定性词项匹配；`inline_limit=12`、`search_limit=6` 是按工具数量计算的初始工程值，尚未用真实大目录、Token 占比和漏召回率调优。当前 MCP Adapter 每次 list/call 建立一个初始化 Session，能证明协议与边界，但延迟高于长连接，也不接收连续通知。
 
 Skill Loader 的 `max_skills=2000`、`max_skill_bytes=1_000_000`、`max_resources=200` 与正文 500 行建议值都是防御性初始值，尚未用真实目录和 Token 成本调优。发现阶段会为校验和 Hash 有界读取 `SKILL.md`，但不会向模型披露正文；当前只列出 `scripts/references/assets` 资源名，不读取资源正文，也不执行脚本。
 
-尚未完成：MCP stdio/Streamable HTTP 长连接、OAuth、重连与 `notifications/tools/list_changed`；Agent Skills 千级目录检索、资源正文按需读取、文件监听热更新、真实 DeepSeek 触发质量和受控 Evolution；Research TaskPack，以及 Repo/Research 双任务的 Phase 2 整体准出。Tool Search 与 Skill 触发均未通过真实 DeepSeek 大目录评测，因此这里只证明机制链路可运行，不宣称检索或选择质量。
+本地确定性 Phase 2 准出已满足：同一 canonical Runtime 无需修改 Core 即可完成 Repo 与 Research 两类任务，危险写操作仍由 ToolPolicy 审批。尚未完成：MCP stdio/Streamable HTTP 长连接、OAuth、重连与 `notifications/tools/list_changed`；Agent Skills 千级目录检索、资源正文按需读取、文件监听热更新；开放互联网 Research、语义事实核验和 Research Team；真实 DeepSeek 下的 Tool Search、Skill 触发与双任务质量评测。因此这里只证明机制与本地 Golden Task 可运行，不宣称开放研究质量或线上模型收益。
 
 ### Phase 3：真实 Agent Team，2-3 周
 
