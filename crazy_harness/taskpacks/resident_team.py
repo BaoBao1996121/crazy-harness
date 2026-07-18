@@ -33,6 +33,7 @@ class ResidentDemoTeamTaskPack:
     task_pack_id = "resident-demo"
     _TOOL_BY_STAGE = {
         "evidence": "team.evidence.collect",
+        "risk": "team.risk.inspect",
         "artifact": "team.peer.response.inspect",
         "review": "team.artifact.inspect",
     }
@@ -52,6 +53,17 @@ class ResidentDemoTeamTaskPack:
                 completion_event_type="evidence.recorded",
             ),
             TeamStageSpec(
+                stage_id="risk",
+                result_kind="evidence",
+                goal="Independently inspect runtime risks and recovery boundaries.",
+                required_capabilities=frozenset({"evidence.collect"}),
+                exit_criteria=(
+                    "risk evidence is persisted",
+                    "recovery boundaries are explicit",
+                ),
+                completion_event_type="evidence.recorded",
+            ),
+            TeamStageSpec(
                 stage_id="artifact",
                 result_kind="artifact",
                 goal="Compose a bounded execution artifact from the collected evidence.",
@@ -60,7 +72,7 @@ class ResidentDemoTeamTaskPack:
                     "one peer reconciliation is complete",
                     "artifact cites evidence",
                 ),
-                depends_on=("evidence",),
+                depends_on=("evidence", "risk"),
                 completion_event_type="artifact.recorded",
             ),
             TeamStageSpec(
@@ -84,8 +96,8 @@ class ResidentDemoTeamTaskPack:
         )
         return TeamContract(
             contract_id=self.task_pack_id,
-            version=1,
-            max_parallel_assignments=1,
+            version=2,
+            max_parallel_assignments=2,
             lease_seconds=30,
             stages=durable_stages,
             peer_contract=self.peer_contract(),
@@ -120,6 +132,12 @@ class ResidentDemoTeamTaskPack:
         tool_name = self._TOOL_BY_STAGE[stage_id]
         schemas = {
             "evidence": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}},
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+            "risk": {
                 "type": "object",
                 "properties": {"summary": {"type": "string"}},
                 "required": ["summary"],
@@ -217,6 +235,21 @@ class ResidentDemoTeamTaskPack:
                     },
                 },
             ],
+            "risk": [
+                {
+                    "type": "call_tool",
+                    "reason": "inspect runtime risk and recovery boundaries independently",
+                    "tool_name": self._TOOL_BY_STAGE[stage_id],
+                    "tool_args": {},
+                },
+                {
+                    "type": "submit_output",
+                    "reason": "the persisted tool observation satisfies the risk contract",
+                    "artifact": {
+                        "summary": "Lease, recovery, and bounded-execution risks were inspected independently."
+                    },
+                },
+            ],
             "artifact": [
                 {
                     "type": "send_message",
@@ -224,6 +257,8 @@ class ResidentDemoTeamTaskPack:
                     "receiver": peer_receiver,
                     "message": {
                         "brief": "Confirm that the evidence is current before artifact composition.",
+                        # Scope is an authority vocabulary, not a stage list.
+                        # Both evidence and risk capsules are public evidence.
                         "scope": ["evidence"],
                         "permissions": ["read"],
                         "depth": 1,
@@ -241,7 +276,7 @@ class ResidentDemoTeamTaskPack:
                     "reason": "peer reconciliation and persisted evidence support this bounded plan",
                     "artifact": {
                         "title": "Bounded execution plan",
-                        "summary": "A reversible plan grounded in the Scout evidence capsule.",
+                        "summary": "A reversible plan grounded in independent evidence and risk capsules.",
                         "content": {
                             "steps": [
                                 "inspect evidence",
@@ -509,9 +544,10 @@ class ResidentDemoTeamTaskPack:
 
         def inspect(_: dict) -> ToolResult:
             events = event_log.read_all(run_id=run_id)
-            if stage_id == "evidence":
+            if stage_id in {"evidence", "risk"}:
                 run = next(event for event in events if event.type == "run.created")
                 payload = {
+                    "lens": stage_id,
                     "title": run.payload.get("title"),
                     "brief": run.payload.get("brief"),
                     "observed_event_count": len(events),

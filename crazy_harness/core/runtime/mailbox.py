@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 from crazy_harness.core.events import Event, EventLog
 
@@ -24,7 +24,7 @@ class DurableMailbox:
         self.event_log = event_log
 
     def send(self, event: Event, *, delivery_id: str | None = None) -> Delivery:
-        delivery = Delivery(delivery_id or uuid4().hex, event)
+        delivery = Delivery(delivery_id or f"event:{event.id}", event)
         existing = self._delivery(delivery.delivery_id)
         if existing is not None:
             if existing.event != event:
@@ -32,6 +32,14 @@ class DurableMailbox:
             return existing
         self.event_log.append(
             Event(
+                # Delivery identity is the durable idempotency boundary. Two
+                # routers racing to send the same semantic delivery converge.
+                id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"crazy:mailbox:{self.mailbox_id}:sent:{delivery.delivery_id}",
+                    )
+                ),
                 run_id=event.run_id,
                 task_id=event.task_id,
                 type=_DELIVERY_SENT,
@@ -47,26 +55,40 @@ class DurableMailbox:
         return delivery
 
     def peek(self, predicate: Callable[[Event], bool] | None = None) -> Delivery | None:
-        for delivery in self._pending():
+        for delivery in self.pending():
             if predicate is None or predicate(delivery.event):
                 return delivery
         return None
 
+    def pending(self) -> tuple[Delivery, ...]:
+        """Return the durable FIFO view; schedulers may reserve without removing."""
+
+        return tuple(self._pending())
+
     def ack(self, delivery_id: str) -> None:
+        if all(item.delivery_id != delivery_id for item in self._pending()):
+            return
+        self.event_log.append(self.ack_event(delivery_id))
+
+    def ack_event(self, delivery_id: str) -> Event:
+        """Build the deterministic Ack fact for an atomic fenced commit."""
+
         delivery = self._delivery(delivery_id)
         if delivery is None:
             raise KeyError(f"unknown delivery: {delivery_id}")
-        if all(item.delivery_id != delivery_id for item in self._pending()):
-            return
-        self.event_log.append(
-            Event(
-                run_id=delivery.event.run_id,
-                task_id=delivery.event.task_id,
-                type=_DELIVERY_ACKED,
-                source=f"mailbox:{self.mailbox_id}",
-                payload={"mailbox_id": self.mailbox_id, "delivery_id": delivery_id},
-                causation_id=delivery.event.id,
-            )
+        return Event(
+            id=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"crazy:mailbox:{self.mailbox_id}:acked:{delivery_id}",
+                )
+            ),
+            run_id=delivery.event.run_id,
+            task_id=delivery.event.task_id,
+            type=_DELIVERY_ACKED,
+            source=f"mailbox:{self.mailbox_id}",
+            payload={"mailbox_id": self.mailbox_id, "delivery_id": delivery_id},
+            causation_id=delivery.event.id,
         )
 
     def _pending(self) -> list[Delivery]:

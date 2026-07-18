@@ -2,12 +2,26 @@
 
 Crazy welcomes small, reproducible contributions to its Agent Loop, durable runtime, Context, Capability, A2A, Memory, and Eval layers.
 
-## Local checks
+## Regression stages
+
+Use the smallest stage that can disprove the change, then let later stages broaden confidence. This keeps vertical exploration fast without removing release gates.
+
+| Stage | Purpose | Typical command |
+|---|---|---|
+| Changed | Exact RED/GREEN tests for the edited behavior | `python -m pytest -q path/to/test.py::test_name` |
+| Smoke | Fast end-to-end and safety signal | `python -m pytest -q -m smoke` |
+| Core | Deterministic harness regression at a mechanism milestone | `python -m pytest -q -m "not llm and not nightly"` |
+| Release | Lint, Core, frontend tests/build, and CI platform matrix | Commands below |
+| Nightly | Stress, chaos, repeated sampling, live adapters | `python -m pytest -q -m nightly` plus opt-in live tests |
+
+Authorization, command validation, fencing, completion gates, irreversible side effects, and terminal-state invariants are hard boundaries. Changes to them require immediate focused tests even during rapid exploration.
+
+## Release checks
 
 ```powershell
 python -m pip install -e ".[dev,browser,mcp]"
 python -m playwright install chromium
-python -m pytest -q -m "not llm"
+python -m pytest -q -m "not llm and not nightly"
 python -m ruff check --no-cache crazy_harness tests work labs\16h_sprint
 
 cd frontend
@@ -16,7 +30,7 @@ npm test
 npm run build
 ```
 
-Live DeepSeek tests require both `DEEPSEEK_API_KEY` and `CRAZY_RUN_LLM_TESTS=1`.
+Live DeepSeek tests require both `DEEPSEEK_API_KEY` and `CRAZY_RUN_LLM_TESTS=1`. The scheduled workflow also requires repository variable `CRAZY_NIGHTLY_LLM=1`, so storing a key alone never creates recurring model cost.
 
 ## Contribution rules
 

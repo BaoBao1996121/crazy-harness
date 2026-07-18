@@ -293,7 +293,30 @@ def test_expired_lease_reassigns_to_backup_and_stale_delivery_has_no_effect(tmp_
     )
     assert first_lease["agent_id"] == "scout"
 
-    after_deadline = datetime.fromisoformat(first_lease["expires_at"]) + timedelta(seconds=1)
+    other_lease = next(
+        item
+        for item in runtime.snapshot(created.run_id)["leases"]
+        if item["assignment_id"] != first_lease["assignment_id"]
+    )
+    first_deadline = datetime.fromisoformat(first_lease["expires_at"])
+    other_deadline = datetime.fromisoformat(other_lease["expires_at"])
+    assert first_deadline == other_deadline
+    runtime.store.append(
+        Event(
+            run_id=created.run_id,
+            task_id=created.task_id,
+            type="assignment.lease.renewed",
+            source="test.heartbeat",
+            payload={
+                "lease_id": other_lease["lease_id"],
+                "assignment_id": other_lease["assignment_id"],
+                "stage_id": other_lease["stage_id"],
+                "agent_id": other_lease["agent_id"],
+                "expires_at": (other_deadline + timedelta(seconds=30)).isoformat(),
+            },
+        )
+    )
+    after_deadline = first_deadline + timedelta(seconds=1)
     assert runtime.expire_due_leases(now=after_deadline) == 1
     runtime.run_until_idle(max_steps=120)
 
@@ -303,7 +326,12 @@ def test_expired_lease_reassigns_to_backup_and_stale_delivery_has_no_effect(tmp_
         for event in events
         if event.type == "assignment.created" and event.payload.get("stage_id") == "evidence"
     ]
-    evidence_events = [event for event in events if event.type == "evidence.recorded"]
+    evidence_events = [
+        event
+        for event in events
+        if event.type == "evidence.recorded"
+        and event.payload.get("stage_id") == "evidence"
+    ]
 
     assert runtime.snapshot(created.run_id)["run"]["status"] == "succeeded"
     assert [event.payload["agent_id"] for event in evidence_assignments] == [

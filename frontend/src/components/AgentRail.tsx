@@ -1,9 +1,10 @@
-import { Bot, Boxes, Hammer, Mail, Network, Radar, ShieldCheck } from "lucide-react";
+import { Activity, Bot, Boxes, Hammer, Mail, Network, Radar, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { Snapshot } from "../api/client";
 import { agentLabel, capabilityLabel, contentLabel, statusLabel } from "../lib/i18n";
 import { leaseSummary } from "../lib/leases";
+import { normalizeScheduler } from "../lib/scheduler";
 
 const AGENT_ICON: Record<string, LucideIcon> = {
   coordinator: Network,
@@ -22,6 +23,7 @@ export function AgentRail({ snapshot }: AgentRailProps) {
   const agents = snapshot?.agents ?? [];
   const assignments = snapshot?.assignments ?? [];
   const leases = snapshot?.leases ?? [];
+  const scheduler = normalizeScheduler(snapshot?.runtime.scheduler);
   return (
     <aside className="agent-rail">
       <div className="rail-heading">
@@ -43,6 +45,10 @@ export function AgentRail({ snapshot }: AgentRailProps) {
             ? leases.find((item) => item.assignment_id === assignment.assignment_id)
             : undefined;
           const leaseCopy = leaseSummary(lease);
+          const worker = scheduler.workers.get(agent.agent_id);
+          const active = worker?.active ?? 0;
+          const capacity = worker?.capacity ?? 0;
+          const queued = worker?.queued ?? agent.mailbox_pending;
           return (
             <div className={`agent-row agent-${agent.agent_id}`} key={agent.agent_id}>
               <div className="agent-icon" aria-hidden="true"><Icon size={18} /></div>
@@ -53,13 +59,21 @@ export function AgentRail({ snapshot }: AgentRailProps) {
                 </div>
                 <span>{statusLabel(agent.status)}</span>
                 <small>{assignment ? contentLabel(assignment.goal) : capabilityLabel(agent.capabilities?.[0])}</small>
-              </div>
                 {leaseCopy ? (
                   <small className={`lease-copy ${lease?.status}`}>{leaseCopy}</small>
                 ) : null}
-              <div className="mailbox-count" title="待处理的持久邮箱投递 / Pending durable mailbox deliveries">
-                <Mail size={13} aria-hidden="true" />
-                <span>{agent.mailbox_pending}</span>
+              </div>
+              <div className="agent-load" aria-label={`${agentLabel(agent.agent_id)} 调度负载 / Scheduler load`}>
+                <span title="执行中/最大并发 · in_flight/max">
+                  <Activity size={12} aria-hidden="true" />
+                  <strong>{active}/{capacity}</strong>
+                  <small>in_flight/max</small>
+                </span>
+                <span title="等待队列 / Queue">
+                  <Mail size={12} aria-hidden="true" />
+                  <strong>{queued}</strong>
+                  <small>Q</small>
+                </span>
               </div>
             </div>
           );

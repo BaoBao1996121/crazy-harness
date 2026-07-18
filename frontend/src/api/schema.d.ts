@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Run */
+        post: operations["cancel_run_api_runs__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/snapshot": {
         parameters: {
             query?: never;
@@ -185,6 +202,11 @@ export interface components {
              * @default 0
              */
             mailbox_pending: number;
+            /**
+             * In Flight
+             * @default 0
+             */
+            in_flight: number;
             /** Active Run Id */
             active_run_id?: string | null;
             /** Last Error */
@@ -210,6 +232,17 @@ export interface components {
             status: string;
         } & {
             [key: string]: unknown;
+        };
+        /** CancelResult */
+        CancelResult: {
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+            /** Active Cancelled */
+            active_cancelled: number;
+            /** Queued Cancelled */
+            queued_cancelled: number;
         };
         /** CapabilityManifestView */
         CapabilityManifestView: {
@@ -492,6 +525,31 @@ export interface components {
             /** Depth */
             depth: number;
         };
+        /** QueuedDeliveryView */
+        QueuedDeliveryView: {
+            /** Delivery Id */
+            delivery_id: string;
+            /** Worker Id */
+            worker_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Assignment Id */
+            assignment_id?: string | null;
+            /** Stage Id */
+            stage_id?: string | null;
+            /** Position */
+            position: number;
+            /** Claim State */
+            claim_state?: string | null;
+            /** Fencing Token */
+            fencing_token?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** RebuildResult */
         RebuildResult: {
             /** Status */
@@ -555,6 +613,12 @@ export interface components {
             deepseek_configured: boolean;
             /** Fact Source */
             fact_source: string;
+            /** Generated At */
+            generated_at: string;
+            /** Scheduler */
+            scheduler: {
+                [key: string]: unknown;
+            };
         } & {
             [key: string]: unknown;
         };
@@ -577,6 +641,10 @@ export interface components {
             evolutions: components["schemas"]["EvolutionView"][];
             /** Dream Jobs */
             dream_jobs: components["schemas"]["DreamJobView"][];
+            /** Queued Deliveries */
+            queued_deliveries: components["schemas"]["QueuedDeliveryView"][];
+            /** Work Claims */
+            work_claims: components["schemas"]["WorkClaimView"][];
             runtime: components["schemas"]["RuntimeView"];
         };
         /** TaskRequest */
@@ -612,6 +680,25 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** WorkClaimView */
+        WorkClaimView: {
+            /** Claim Key */
+            claim_key: string;
+            /** Owner Id */
+            owner_id: string;
+            /** Fencing Token */
+            fencing_token: number;
+            /** State */
+            state: string;
+            /** Claimed At */
+            claimed_at: string;
+            /** Expires At */
+            expires_at: string;
+            /** Updated At */
+            updated_at: string;
+        } & {
+            [key: string]: unknown;
         };
     };
     responses: never;
@@ -693,6 +780,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DrainResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_run_api_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelResult"];
                 };
             };
             /** @description Validation Error */

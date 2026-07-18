@@ -6,6 +6,11 @@ from threading import Barrier
 
 import pytest
 
+from crazy_harness.core.dispatch import (
+    DispatchCancelled,
+    DispatchContext,
+    activate_dispatch_context,
+)
 from crazy_harness.core.hooks import HookManager
 from crazy_harness.core.runtime.local import (
     GuardedLocalRuntime,
@@ -175,6 +180,75 @@ def test_parallel_batch_has_all_settled_results() -> None:
     assert [result.status for result in execution.results] == ["fulfilled", "rejected"]
     assert execution.results[0].result == ToolResult(name="good", status="ok", output="evidence")
     assert execution.results[1].error == "boom"
+
+
+def test_cancelled_dispatch_cannot_start_a_new_tool_effect() -> None:
+    registry = ToolRegistry()
+    effects: list[str] = []
+    registry.register(
+        tool_spec("remote.write"),
+        lambda _args: effects.append("started")
+        or ToolResult(name="remote.write", status="ok"),
+    )
+    dispatch = DispatchContext.create(
+        worker_id="builder",
+        delivery_id="delivery-cancelled",
+        claim_owner_id="scheduler-owner",
+        claim_tokens={"delivery:builder:delivery-cancelled": 1},
+    )
+    dispatch.cancellation.cancel("operator_requested")
+
+    with activate_dispatch_context(dispatch), pytest.raises(DispatchCancelled):
+        ToolPipeline(registry).execute(
+            [
+                ToolRequest(
+                    call=ToolCall(name="remote.write"),
+                    idempotency_key="cancelled-write",
+                )
+            ],
+            context("remote.write"),
+        )
+
+    assert effects == []
+
+
+def test_cancellation_after_operation_started_propagates_without_tool_effect() -> None:
+    registry = ToolRegistry()
+    effects: list[str] = []
+    registry.register(
+        tool_spec("remote.write"),
+        lambda _args: effects.append("started")
+        or ToolResult(name="remote.write", status="ok"),
+    )
+    ledger = OperationLedger()
+    dispatch = DispatchContext.create(
+        worker_id="builder",
+        delivery_id="delivery-cancel-after-start",
+        claim_owner_id="scheduler-owner",
+        claim_tokens={"delivery:builder:delivery-cancel-after-start": 1},
+    )
+
+    def cancel_after_started(_record, _invocation) -> None:
+        dispatch.cancellation.cancel("claim_lost")
+
+    with activate_dispatch_context(dispatch), pytest.raises(DispatchCancelled):
+        ToolPipeline(registry, ledger=ledger).execute(
+            [
+                ToolRequest(
+                    call=ToolCall(name="remote.write"),
+                    idempotency_key="cancel-after-start",
+                )
+            ],
+            context("remote.write"),
+            on_started=cancel_after_started,
+        )
+
+    record = ledger.by_idempotency_key("cancel-after-start")
+    assert record is not None
+    assert record.state is OperationState.STARTED
+    assert record.result is None
+    assert record.error is None
+    assert effects == []
 
 
 def _handler(name: str, rendezvous: Barrier):

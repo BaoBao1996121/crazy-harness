@@ -34,6 +34,7 @@ class AgentView(_View):
     last_heartbeat_at: str | None = None
     active_assignment_id: str | None = None
     mailbox_pending: int = 0
+    in_flight: int = 0
     active_run_id: str | None = None
     last_error: str | None = None
 
@@ -130,6 +131,31 @@ class RuntimeView(_View):
     latest_event_id: str | None = None
     deepseek_configured: bool
     fact_source: str
+    generated_at: str
+    scheduler: dict[str, Any]
+
+
+class QueuedDeliveryView(_View):
+    delivery_id: str
+    worker_id: str
+    run_id: str
+    task_id: str
+    event_type: str
+    assignment_id: str | None = None
+    stage_id: str | None = None
+    position: int = Field(ge=1)
+    claim_state: str | None = None
+    fencing_token: int | None = None
+
+
+class WorkClaimView(_View):
+    claim_key: str
+    owner_id: str
+    fencing_token: int = Field(ge=1)
+    state: str
+    claimed_at: str
+    expires_at: str
+    updated_at: str
 
 
 class SnapshotView(BaseModel):
@@ -142,6 +168,8 @@ class SnapshotView(BaseModel):
     memories: list[MemoryView]
     evolutions: list[EvolutionView]
     dream_jobs: list[DreamJobView]
+    queued_deliveries: list[QueuedDeliveryView]
+    work_claims: list[WorkClaimView]
     runtime: RuntimeView
 
 
@@ -159,6 +187,13 @@ class HealthView(BaseModel):
 class DrainResult(BaseModel):
     run_id: str
     steps: int = Field(ge=0)
+
+
+class CancelResult(BaseModel):
+    run_id: str
+    status: str
+    active_cancelled: int = Field(ge=0)
+    queued_cancelled: int = Field(ge=0)
 
 
 class FaultResult(BaseModel):

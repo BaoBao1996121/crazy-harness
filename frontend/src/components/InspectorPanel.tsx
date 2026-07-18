@@ -6,8 +6,11 @@ import {
   CircleAlert,
   Database,
   FileJson,
+  Gauge,
   GitCompareArrows,
+  KeyRound,
   Layers3,
+  ListTodo,
   Network,
   RefreshCw,
   Search,
@@ -22,6 +25,7 @@ import { capabilityIdentityEntries, capabilityRecallEntries } from "../lib/capab
 import { eventMeta, shortId } from "../lib/events";
 import { skillViewFromEvents } from "../lib/skills";
 import { agentLabel, boundaryLabel, contentLabel, statusLabel } from "../lib/i18n";
+import { normalizeScheduler, schedulerPressure } from "../lib/scheduler";
 
 export type InspectorTab = "event" | "context" | "a2a" | "memory" | "evolution" | "chaos";
 
@@ -74,7 +78,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
           />
         )}
         {props.activeTab === "context" && <ContextInspector snapshot={props.snapshot} events={props.events} />}
-        {props.activeTab === "a2a" && <A2AInspector events={props.events} />}
+        {props.activeTab === "a2a" && <A2AInspector events={props.events} snapshot={props.snapshot} />}
         {props.activeTab === "memory" && <MemoryInspector snapshot={props.snapshot} events={props.events} />}
         {props.activeTab === "evolution" && <EvolutionInspector snapshot={props.snapshot} />}
         {props.activeTab === "chaos" && (
@@ -345,7 +349,7 @@ function ContextInspector({ snapshot, events }: { snapshot: Snapshot | null; eve
   );
 }
 
-function A2AInspector({ events }: { events: EventRecord[] }) {
+function A2AInspector({ events, snapshot }: { events: EventRecord[]; snapshot: Snapshot | null }) {
   const agentRuns = events
     .filter((record) => record.event.type === "agent.run.created")
     .map((seed) => agentRunSummary(seed, events));
@@ -356,6 +360,7 @@ function A2AInspector({ events }: { events: EventRecord[] }) {
   return (
     <>
       <PanelHeading eyebrow="受控的一跳通道 / Bounded peer channel" title="A2A 对账 / Reconciliation" value={peerEvents.length} />
+      <SchedulerFlow snapshot={snapshot} />
       {agentRuns.length > 0 && (
         <AgentRunList runs={agentRuns} />
       )}
@@ -395,6 +400,121 @@ function A2AInspector({ events }: { events: EventRecord[] }) {
       )}
     </>
   );
+}
+
+function SchedulerFlow({ snapshot }: { snapshot: Snapshot | null }) {
+  const scheduler = normalizeScheduler(snapshot?.runtime.scheduler);
+  const pressure = schedulerPressure(scheduler);
+  const queue = snapshot?.queued_deliveries ?? [];
+  const claims = snapshot?.work_claims ?? [];
+  return (
+    <section className="scheduler-flow" aria-label="调度、队列与工作声明 / Scheduler, queue, and work claims">
+      <div className="scheduler-flow-heading">
+        <div>
+          <span className="eyebrow">受控并发 / Controlled concurrency</span>
+          <h3>调度器 / Scheduler</h3>
+        </div>
+        <div className="scheduler-identity">
+          <span className={`scheduler-state ${scheduler.state}`}>{statusLabel(scheduler.state)}</span>
+          <code title={scheduler.instanceId}>{shortId(scheduler.instanceId, 18)}</code>
+        </div>
+      </div>
+
+      <div className="scheduler-metrics">
+        <div>
+          <Gauge size={15} aria-hidden="true" />
+          <span><small>本机活跃/容量 / Local Active/Capacity</small><strong>{scheduler.active}/{scheduler.capacity}</strong></span>
+        </div>
+        <div>
+          <ListTodo size={15} aria-hidden="true" />
+          <span><small>本机排队 / Local Queued</small><strong>{scheduler.queued}</strong></span>
+        </div>
+        <div className={`pressure-${pressure.kind}`}>
+          <Zap size={15} aria-hidden="true" />
+          <span><small>压力 / Pressure</small><strong>{pressure.label} · {pressure.percent}%</strong></span>
+        </div>
+      </div>
+
+      <div className="scheduler-policy-line">
+        <span>策略 / Policy <strong>{schedulerPolicyLabel(scheduler.policy)}</strong></span>
+        <span>公平范围 / Fairness <strong>{fairnessScopeLabel(scheduler.fairnessScope)}</strong></span>
+      </div>
+
+      <div className="runtime-list-section">
+        <div className="section-label">
+          <span>未确认投递 / Unacked deliveries</span>
+          <span>{queue.length} 项 / items</span>
+        </div>
+        <div className="queue-observation-list">
+          {queue.length === 0 ? (
+            <div className="runtime-list-empty">没有未确认投递 / No unacked deliveries</div>
+          ) : queue.map((delivery) => (
+            <div className="queue-observation-row" key={`${delivery.worker_id}:${delivery.delivery_id}`}>
+              <code className="queue-position">#{delivery.position}</code>
+              <div>
+                <strong>{agentLabel(delivery.worker_id)}</strong>
+                <span>{eventMeta(delivery.event_type).label}</span>
+                <code title={delivery.delivery_id}>{shortId(delivery.delivery_id, 16)}</code>
+              </div>
+              <span className={`claim-state ${delivery.claim_state ?? "unclaimed"}`}>
+                {delivery.claim_state
+                  ? `${statusLabel(delivery.claim_state)} · T${delivery.fencing_token ?? "—"}`
+                  : "未声明 / Unclaimed"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="runtime-list-section">
+        <div className="section-label">
+          <span>工作声明 / Work Claims</span>
+          <span>{claims.length} 项 / items</span>
+        </div>
+        <div className="claim-observation-list">
+          {claims.length === 0 ? (
+            <div className="runtime-list-empty">暂无声明 / No work claims</div>
+          ) : claims.map((claim) => (
+            <div className="claim-observation-row" key={claim.claim_key}>
+              <KeyRound size={13} aria-hidden="true" />
+              <div>
+                <strong>{claimKindLabel(claim.claim_key)}</strong>
+                <code title={claim.claim_key}>{shortId(claim.claim_key, 24)}</code>
+                <span title={claim.owner_id}>持有者 / Owner <code>{shortId(claim.owner_id, 14)}</code></span>
+              </div>
+              <div>
+                <strong className={claim.state}>{statusLabel(claim.state)}</strong>
+                <span>令牌 / Token {claim.fencing_token}</span>
+                <time dateTime={claim.expires_at}>到期 / Expires {claimExpiry(claim.expires_at)}</time>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function schedulerPolicyLabel(value: string): string {
+  return value === "round_robin" ? "轮询 / Round robin" : value || "未报告 / Not reported";
+}
+
+function fairnessScopeLabel(value: string): string {
+  return value === "process_workers" ? "进程内工作者 / Process workers" : value || "未报告 / Not reported";
+}
+
+export function claimKindLabel(claimKey: string): string {
+  if (claimKey.startsWith("agent-run:")) return "AgentRun 声明 / AgentRun claim";
+  if (claimKey.startsWith("delivery:")) return "投递 Claim / Delivery claim";
+  if (claimKey.startsWith("worker-slot:")) return "容量槽声明 / Worker slot claim";
+  return "工作 Claim / Work claim";
+}
+
+function claimExpiry(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleTimeString("zh-CN", { hour12: false });
 }
 
 type AgentRunTone = "info" | "success" | "warning" | "danger";
@@ -476,11 +596,12 @@ function agentRunSummary(seed: EventRecord, events: EventRecord[]): AgentRunSumm
   };
 }
 
-function stageLabel(stage: string): string {
+export function stageLabel(stage: string): string {
   const labels: Record<string, string> = {
     evidence: "证据采集 / Evidence",
     artifact: "制品构建 / Artifact",
     review: "独立审查 / Review",
+    risk: "风险研判 / Risk",
   };
   return labels[stage] ?? (stage || "任务执行 / Assignment");
 }

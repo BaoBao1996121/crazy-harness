@@ -15,6 +15,10 @@ from crazy_harness.control_plane.store import (
 from crazy_harness.core.a2a.orchestration import PlanPatch, TeamContract
 from crazy_harness.core.agents.contracts import AssignmentContract
 from crazy_harness.core.events import Event
+from crazy_harness.core.dispatch import (
+    current_dispatch_context,
+    raise_if_dispatch_cancelled,
+)
 
 
 class CommandKind(StrEnum):
@@ -218,6 +222,7 @@ class ControlKernel:
         self.fault_controller = fault_controller or FaultController()
 
     def submit(self, candidate: CommandCandidate) -> KernelDecision:
+        raise_if_dispatch_cancelled()
         record = self.store.command_record(candidate.idempotency_key)
         if record is not None and record["state"] in {"accepted", "rejected"}:
             decision = KernelDecision.model_validate_json(record["decision_json"])
@@ -300,6 +305,7 @@ class ControlKernel:
                 events=[accepted, *formal_events],
                 after_event=self._trip_during_command_commit,
                 precondition=lambda: self._validate(candidate),
+                **self._work_claim_guard(),
             )
         except CommandPreconditionFailed as exc:
             return self._commit_rejection(
@@ -330,8 +336,20 @@ class ControlKernel:
             decision_json=decision.model_dump_json(),
             events=events,
             after_event=self._trip_during_command_commit,
+            **self._work_claim_guard(),
         )
         return decision
+
+    @staticmethod
+    def _work_claim_guard() -> dict[str, object]:
+        context = current_dispatch_context()
+        if context is None:
+            return {}
+        context.cancellation.raise_if_cancelled()
+        return {
+            "work_claim_owner_id": context.claim_owner_id,
+            "work_claims": dict(context.claim_tokens),
+        }
 
     def events_for(self, decision: KernelDecision) -> list[Event]:
         return [self.store.get_event(event_id) for event_id in decision.event_ids]

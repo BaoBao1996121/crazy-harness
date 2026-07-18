@@ -114,10 +114,10 @@ sequenceDiagram
 Resident Demo 的 DAG 是：
 
 ```text
-evidence -> artifact -> review
+evidence + risk -> artifact -> review
 ```
 
-Builder 在 artifact 阶段可以向 Evidence Producer 发起一次受控一跳对账，但不能继续自主规划新的 Agent 链路。结果仍返回 Supervisor，由 Supervisor 根据最新事实决定下一阶段。
+evidence 与 risk 是两个独立根阶段，可以由不同 Agent 真实并行；artifact 必须等待两份正式结果后才就绪。Builder 在 artifact 阶段可以向 Evidence Producer 发起一次受控一跳对账，但不能继续自主规划新的 Agent 链路。结果仍返回 Supervisor，由 Supervisor 根据最新事实决定下一阶段。
 
 ### 3.1 Builder 的持久 Wait/Resume
 
@@ -245,12 +245,13 @@ Worker 看到：自己的 Assignment、局部 Context、可用工具、必要的
 | 策略与 DAG 单测 | `tests/core/test_supervisor_policy.py` |
 | Lease、恢复与故障转移集成测试 | `tests/control_plane/test_durable_supervisor.py` |
 | Team Worker AgentLoop、A2A 恢复、provenance 与失败传播测试 | `tests/control_plane/test_team_worker_agent_loop.py` |
+| 受控并发、Claim、Fencing、取消与背压测试 | `tests/control_plane/test_controlled_concurrency.py` |
 
 ## 7. 已验证证据
 
 当前源码与回归测试可直接证明以下事实，不依赖模型自述：
 
-- evidence、artifact、review 三个 Assignment 均出现唯一 `agent.run.created`，并经过 Context、Model、Command、Tool、CompletionGate 和 `agent.submitted`。
+- evidence、risk、artifact、review 四个 Assignment 均出现唯一 `agent.run.created`，并经过 Context、Model、Command、Tool、CompletionGate 和 `agent.submitted`；evidence 与 risk 会真实重叠，artifact 只在二者完成后启动。
 - Builder 的 `agent.waiting` 早于对应 Peer Response，响应镜像后才出现下一次 `model.requested`。
 - Peer responder 拥有独立 child AgentRun；A2A payload 不包含 `full_context` 或 `local_plan`。
 - Runtime 在 Builder Wait 期间重建后只存在一次 Peer Request，每个 Assignment 只提交一次。
@@ -261,13 +262,14 @@ Worker 看到：自己的 Assignment、局部 Context、可用工具、必要的
 - 意外 Handler 异常可 redeliver；永久毒消息在第 3 次失败后 Dead Letter，同时终结 Run/Assignment/Lease，不会悬空或饿死其他 Worker。
 - AgentRun 负向测试覆盖 Contract 替换、模型链跳过、错误工具冒充合同证据，以及 Projection 仍 active 但墙钟已过期的 Peer Response。
 - stale Delivery 只保留审计事实，不会把已 succeeded 的 Assignment Projection 倒退为 stale。
+- 两个 Scheduler 不能同时消费同一 Delivery 或重入同一 AgentRun；旧 fencing token 不能提交正式 Command 或 Ack，取消后 ToolPipeline 不再开始新的副作用。
 
-对应证据集中在 `tests/control_plane/test_team_worker_agent_loop.py` 与 `tests/control_plane/test_durable_supervisor.py`。文档不固化易过期的全仓测试数量或吞吐数字；提交前应以 CI 与当前本机测试输出为准。
+对应证据集中在 `tests/control_plane/test_team_worker_agent_loop.py`、`tests/control_plane/test_durable_supervisor.py` 与 `tests/control_plane/test_controlled_concurrency.py`。文档不固化易过期的全仓测试数量或吞吐数字；提交前应以 CI 与当前本机测试输出为准。
 
 ## 8. 当前边界与下一步
 
 1. Worker 已进入各自 canonical AgentLoop，但 Team Model Provider 仍是 Scripted Model；`execution_mode=team` 会拒绝在线 DeepSeek，线上模型 Team 尚未完成。
-2. 当前 Scheduler 单消费者；Assignment 可以表达并发约束，但 Resident Demo 的 `max_parallel_assignments=1`，尚未证明真正并行执行或吞吐收益。
+2. v0.6 Scheduler 已采用有界执行池；Resident Demo 的 `evidence` 与 `risk` 两个根阶段真实并行，`max_parallel_assignments=2`。该测试证明执行重叠与容量不越界，不等于生产吞吐收益。
 3. 当前是同进程 EventStore + Durable Mailbox A2A；Remote A2A Server/Client Adapter、跨进程身份和远端 attestation 尚未接入。
 4. 当前 Peer policy 固定为只读、一跳、每 Assignment 一次；这些是 Harness-owned 初始安全阈值，待真实任务 Eval 调优。
 5. Lease 30 秒是初始演示值；已知失败可即时传播，未知失联仍靠 Deadline 兜底。
@@ -283,6 +285,6 @@ Worker 看到：自己的 Assignment、局部 Context、可用工具、必要的
 2. 性能数字：只记录本机测试与真实 Run 数据，不宣称生产吞吐。
 3. 异常路径：Schema 错误、Contract/DAG 篡改、重复或超量派发、伪造完成、错误 provenance、错误 Tool 链、无 Lease 结果、A2A 越权、Peer 失败、Lease 墙钟过期、旧投递、调度周期异常、Dead Letter、Projection rebuild 和 Wait/Resume 崩溃恢复均有对应测试。
 4. 阈值依据：30 秒 Lease、并发 1、Peer depth 1、Peer budget 1 和 Delivery 失败 3 次均是初始演示值，待 Eval 调优。
-5. 需求边界：本纵切完成本地 Durable Supervisor 与 canonical Team Worker，不冒充 Remote A2A、真实并行或在线模型 Team。
+5. 需求边界：本纵切完成本地 Durable Supervisor、canonical Team Worker 与本地受控并发；不冒充 Remote A2A、分布式公平调度或在线模型 Team。
 
 本轮新增的失败重试 3 次也按初始值管理；Command 事务回滚、Outbox 补投、Dead Letter、制品替换与过期 Peer Response 均已有负向测试。

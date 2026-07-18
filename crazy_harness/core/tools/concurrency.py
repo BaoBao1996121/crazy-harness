@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Any
 
+from crazy_harness.core.dispatch import DispatchCancelled
 from crazy_harness.core.tools.schemas import ToolCall, ToolResult
 
 
@@ -78,12 +80,18 @@ def execute_all_settled(
     def settle(call: ToolInvocation) -> SettledToolResult:
         try:
             return execute(call)
+        except DispatchCancelled:
+            raise
         except Exception as exc:
             return SettledToolResult(call_id=call.call_id, status="rejected", error=str(exc))
 
     if batch.concurrent:
         with ThreadPoolExecutor(max_workers=len(batch.calls), thread_name_prefix="crazy-tool") as pool:
-            futures = [pool.submit(settle, call) for call in batch.calls]
+            parent_context = copy_context()
+            futures = [
+                pool.submit(parent_context.copy().run, settle, call)
+                for call in batch.calls
+            ]
             results = tuple(future.result() for future in futures)
     else:
         results = tuple(settle(call) for call in batch.calls)
