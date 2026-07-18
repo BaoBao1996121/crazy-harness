@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from crazy_harness.core.a2a.coordinator import AgentStatus
 from crazy_harness.core.a2a.messages import AgentCard
+from crazy_harness.core.agents.contracts import AssignmentContract
 
 
 class TeamStageSpec(BaseModel):
@@ -20,6 +21,7 @@ class TeamStageSpec(BaseModel):
     exit_criteria: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     completion_event_type: str | None = None
+    assignment_contract: AssignmentContract | None = None
 
 
 class TeamContract(BaseModel):
@@ -32,6 +34,7 @@ class TeamContract(BaseModel):
     stages: tuple[TeamStageSpec, ...]
     max_parallel_assignments: int = Field(default=1, ge=1, le=32)
     lease_seconds: int = Field(default=30, ge=1, le=3600)
+    peer_contract: AssignmentContract | None = None
 
     @model_validator(mode="after")
     def validate_graph(self) -> TeamContract:
@@ -46,6 +49,13 @@ class TeamContract(BaseModel):
             if unknown:
                 raise ValueError(
                     f"stage {stage.stage_id} has unknown dependencies: {sorted(unknown)}"
+                )
+            if stage.assignment_contract is not None and (
+                stage.assignment_contract.goal != stage.goal
+                or stage.assignment_contract.exit_criteria != stage.exit_criteria
+            ):
+                raise ValueError(
+                    f"stage {stage.stage_id} and its assignment contract disagree"
                 )
 
         dependencies = {stage.stage_id: set(stage.depends_on) for stage in self.stages}
@@ -91,6 +101,7 @@ class AssignmentProposal(BaseModel):
     result_kind: str = Field(min_length=1)
     contract_version: int = Field(default=1, ge=1)
     lease_seconds: int = Field(ge=1, le=3600)
+    contract: AssignmentContract | None = None
 
 
 class StagePlanView(BaseModel):
@@ -139,7 +150,9 @@ class SupervisorContext(BaseModel):
 
 
 class SupervisorPolicy(Protocol):
-    def propose(self, contract: TeamContract, context: SupervisorContext) -> PlanPatch: ...
+    def propose(
+        self, contract: TeamContract, context: SupervisorContext
+    ) -> PlanPatch: ...
 
 
 class CapabilitySupervisorPolicy:
@@ -197,6 +210,7 @@ class CapabilitySupervisorPolicy:
                     result_kind=stage.result_kind,
                     contract_version=contract.version,
                     lease_seconds=contract.lease_seconds,
+                    contract=stage.assignment_contract,
                 )
             )
             selected_by_stage[stage.stage_id] = card.agent_id
@@ -204,7 +218,9 @@ class CapabilitySupervisorPolicy:
 
         blocked_reason = None
         if unavailable and not selected and not active:
-            blocked_reason = f"no_available_capable_agent:{','.join(sorted(unavailable))}"
+            blocked_reason = (
+                f"no_available_capable_agent:{','.join(sorted(unavailable))}"
+            )
         if selected:
             reason = "capability_and_status_match:" + ",".join(
                 item.stage_id for item in selected
@@ -243,7 +259,8 @@ class CapabilitySupervisorPolicy:
         eligible = [
             card
             for card in context.cards
-            if context.statuses.get(card.agent_id, AgentStatus.OFFLINE) in self._AVAILABLE
+            if context.statuses.get(card.agent_id, AgentStatus.OFFLINE)
+            in self._AVAILABLE
             and int(loads.get(card.agent_id, 0)) < card.max_concurrency
             and stage.required_capabilities.issubset(set(card.capabilities))
         ]

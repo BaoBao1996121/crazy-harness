@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "runs" / "course_ready"
 LEARNER_COMPLETION_MARKER = "LEARNER_COMPLETED.md"
 DEFAULT_CHECK_TIMEOUT_SECONDS = 300
+REFERENCE_SUITE_TIMEOUT_SECONDS = 600
 BUG_CARD_TIMEOUT_SECONDS = 60
 
 
@@ -89,7 +90,13 @@ def main() -> int:
     python = sys.executable
     checks = [
         lab_asset_check(),
-        run_check("reference_suite", [python, "-m", "pytest", "-q"]),
+        # 2026-07-18 Windows 全套实测约 314 秒；600 秒保留约 2x 余量，
+        # 其他检查仍使用 300 秒，避免掩盖局部挂死。
+        run_check(
+            "reference_suite",
+            [python, "-m", "pytest", "-q"],
+            timeout_seconds=REFERENCE_SUITE_TIMEOUT_SECONDS,
+        ),
         run_check(
             "single_agent_vertical",
             [python, "-m", "crazy_harness.cli", "run", "dev-release", "--mode", "mock", "--runs-dir", "runs/course_ready"],

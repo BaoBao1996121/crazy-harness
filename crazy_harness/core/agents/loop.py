@@ -141,10 +141,11 @@ class AgentLoop:
             messages, prompt_hash = self._build_messages(events, capability_event=capability_event)
 
             # Manifest 记录本轮模型看见/没看见什么，便于审计 Context 编译结果。
+            context_event = None
             if self.context_builder is not None and self.context_builder.last_manifest is not None:
                 manifest = self.context_builder.last_manifest
                 manifest_payload = manifest.model_dump(mode="json")
-                self._append(
+                context_event = self._append(
                     "context.manifest.compiled",
                     {
                         "turn_id": turn_id,
@@ -162,8 +163,12 @@ class AgentLoop:
                         "message_preview": [],
                         **manifest_payload,
                     },
+                    causation_id=(
+                        capability_event.id if capability_event is not None else events[-1].id
+                    ),
                 )
             self._phase(LoopPhase.MODEL_CALLING, turn_id)
+            request_trigger = context_event or capability_event or events[-1]
             requested = self._append(
                 "model.requested",
                 {
@@ -173,6 +178,7 @@ class AgentLoop:
                     "contract_version": self.assignment_contract.version if self.assignment_contract else None,
                     "local_plan_version": self.local_plan.version if self.local_plan else 0,
                 },
+                causation_id=request_trigger.id,
             )
 
             # model.completed 是模型响应的持久边界：它落盘后即使进程崩溃也应复用。
@@ -647,13 +653,15 @@ class AgentLoop:
             call_id=call_id,
             idempotency_key=call_id,
         )
+        operation_event: Event | None = None
 
         def record_started(record: OperationRecord, invocation: ToolInvocation) -> None:
             """在外部效果发生前，先把最终参数和幂等键写入 EventLog。"""
 
+            nonlocal operation_event
             # Hook 可能修改参数，因此同时保留模型提议值和真正执行值。
             effective_args = invocation.call.args
-            operation = self._append(
+            operation_event = self._append(
                 "operation.started",
                 {
                     "turn_id": turn_id,
@@ -674,7 +682,7 @@ class AgentLoop:
                     "tool_name": action.tool_name,
                     "tool_args": effective_args,
                 },
-                causation_id=operation.id,
+                causation_id=operation_event.id,
             )
 
         try:
@@ -698,6 +706,20 @@ class AgentLoop:
         self._fault("after_tool_effect")
         self._phase(LoopPhase.RESULT_RECORDING, turn_id)
         if settled.status in {"fulfilled", "cached"} and settled.result is not None:
+            if operation_event is None:
+                operation_event = next(
+                    (
+                        event
+                        for event in reversed(self._events())
+                        if event.type == "operation.started"
+                        and event.payload.get("operation_id") == settled.operation_id
+                    ),
+                    None,
+                )
+            if operation_event is None:
+                raise RuntimeError(
+                    f"settled operation has no durable start: {settled.operation_id}"
+                )
             completed = self._append(
                 "tool.completed",
                 {
@@ -706,6 +728,7 @@ class AgentLoop:
                     "result": settled.result.model_dump(mode="json"),
                     "cached": settled.status == "cached",
                 },
+                causation_id=operation_event.id,
             )
             self._append(
                 "operation.completed",

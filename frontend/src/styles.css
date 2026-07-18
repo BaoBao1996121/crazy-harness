@@ -706,6 +706,26 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
 .authority-note { display: flex; align-items: flex-start; gap: 7px; margin-top: 12px; padding: 8px; border-left: 2px solid var(--mint); color: var(--muted); background: #f1f6f1; font-size: 8px; line-height: 1.45; }
 .authority-note svg { flex: 0 0 auto; color: var(--mint); }
 
+.agent-run-section { margin: 2px 0 18px; }
+.agent-run-section .section-label { margin-bottom: 2px; }
+.agent-run-list { border-top: 1px solid var(--line-soft); }
+.agent-run-entry {
+  min-height: 51px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 66px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.agent-run-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.agent-run-copy strong { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-copy span { overflow: hidden; color: var(--faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-copy code { color: var(--muted); font-size: 8px; }
+.agent-run-status { color: var(--cyan); font-size: 8px; line-height: 1.25; text-align: right; }
+.agent-run-status.tone-success { color: var(--mint); }
+.agent-run-status.tone-warning { color: var(--amber); }
+.agent-run-status.tone-danger { color: var(--coral); }
+
 .peer-route { display: grid; grid-template-columns: 72px 1fr 72px; align-items: center; gap: 8px; margin: 7px 0 17px; }
 .peer-node { height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--radius); font-size: 9px; font-weight: 700; }
 .peer-node.builder { color: var(--amber); border-color: #d5c19a; }

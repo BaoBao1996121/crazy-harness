@@ -70,6 +70,46 @@ def test_persisted_candidate_is_recovered_without_duplicate_formal_effect(tmp_pa
     assert sum(event.type == "evidence.recorded" for event in events) == 1
 
 
+def test_command_events_and_ledger_finalization_commit_atomically(tmp_path):
+    store = SQLiteEventStore(tmp_path / "control.db")
+    seed(store)
+    fault = FaultController()
+    fault.arm("during_command_commit")
+    kernel = ControlKernel(store, fault_controller=fault)
+    command = candidate(
+        CommandKind.PEER_REQUEST,
+        key="atomic-peer",
+        payload={
+            "assignment_id": "a-1",
+            "receiver": "scout",
+            "scope": ["repo"],
+            "permissions": ["read"],
+            "depth": 1,
+            "peer_budget": 1,
+            "brief": "prove atomic materialization",
+        },
+    )
+
+    with pytest.raises(InjectedKernelCrash):
+        kernel.submit(command)
+
+    assert store.command_record(command.idempotency_key)["state"] == "processing"
+    rolled_back_types = {event.type for event in store.read_all()}
+    assert "candidate.accepted" not in rolled_back_types
+    assert "a2a.peer.requested" not in rolled_back_types
+
+    recovered = kernel.submit(command)
+    event_types = [event.type for event in store.read_all()]
+
+    assert recovered.accepted is True
+    assert recovered.recovered is True
+    assert store.command_record(command.idempotency_key)["state"] == "accepted"
+    assert event_types.count("candidate.accepted") == 1
+    assert event_types.count("a2a.policy.allowed") == 1
+    assert event_types.count("a2a.peer.requested") == 1
+    assert event_types.count("assignment.waiting") == 1
+
+
 def test_one_hop_peer_budget_is_enforced_from_durable_facts(tmp_path):
     path = tmp_path / "control.db"
     store = SQLiteEventStore(path)

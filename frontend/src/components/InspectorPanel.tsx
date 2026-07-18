@@ -132,6 +132,8 @@ function EventInspector({
         <div><dt>事件类型 / Type</dt><dd><code>{event.type}</code></dd></div>
         <div><dt>来源 / Source</dt><dd>{event.source}</dd></div>
         <div><dt>事件 ID</dt><dd title={event.id}><code>{shortId(event.id, 16)}</code></dd></div>
+        <div><dt>运行 ID / Run</dt><dd title={event.run_id}><code>{shortId(event.run_id, 16)}</code></dd></div>
+        <div><dt>任务或 AgentRun / Task</dt><dd title={event.task_id}><code>{shortId(event.task_id, 20)}</code></dd></div>
         <div><dt>创建时间 / Created</dt><dd>{event.created_at ? new Date(event.created_at).toLocaleString("zh-CN", { hour12: false }) : "—"}</dd></div>
       </dl>
       {event.causation_id && (
@@ -344,6 +346,9 @@ function ContextInspector({ snapshot, events }: { snapshot: Snapshot | null; eve
 }
 
 function A2AInspector({ events }: { events: EventRecord[] }) {
+  const agentRuns = events
+    .filter((record) => record.event.type === "agent.run.created")
+    .map((seed) => agentRunSummary(seed, events));
   const peerEvents = events.filter((record) => record.event.type.startsWith("a2a."));
   const allowed = peerEvents.find((record) => record.event.type === "a2a.policy.allowed");
   const request = peerEvents.find((record) => record.event.type === "a2a.peer.requested");
@@ -351,8 +356,11 @@ function A2AInspector({ events }: { events: EventRecord[] }) {
   return (
     <>
       <PanelHeading eyebrow="受控的一跳通道 / Bounded peer channel" title="A2A 对账 / Reconciliation" value={peerEvents.length} />
+      {agentRuns.length > 0 && (
+        <AgentRunList runs={agentRuns} />
+      )}
       {peerEvents.length === 0 ? (
-        <InspectorEmpty icon={Network} title="尚无 A2A 通信 / No peer traffic" detail="构建 Agent 会向侦察 Agent 发起一次受控对账 / Builder will request one Scout reconciliation." />
+        <InspectorEmpty icon={Network} title="尚无 A2A 通信 / No peer traffic" detail="等待持久消息进入受控对账通道 / Waiting for a durable peer message." />
       ) : (
         <>
           <div className="peer-route">
@@ -387,6 +395,94 @@ function A2AInspector({ events }: { events: EventRecord[] }) {
       )}
     </>
   );
+}
+
+type AgentRunTone = "info" | "success" | "warning" | "danger";
+
+interface AgentRunSummary {
+  taskId: string;
+  label: string;
+  kind: string;
+  status: string;
+  tone: AgentRunTone;
+  modelTurns: number;
+  toolCalls: number;
+  waits: number;
+}
+
+function AgentRunList({ runs }: { runs: AgentRunSummary[] }) {
+  return (
+    <section className="agent-run-section">
+      <div className="section-label">
+        <span>子 AgentLoop 执行链 / Child AgentLoop chain</span>
+        <span>{runs.length} 个 AgentRun</span>
+      </div>
+      <div className="agent-run-list">
+        {runs.map((run) => (
+          <div className="agent-run-entry" key={run.taskId}>
+            <span className={`sequence-dot tone-${run.tone}`} />
+            <div className="agent-run-copy">
+              <strong>{run.label}</strong>
+              <span>
+                {run.modelTurns} 模型轮次 · {run.toolCalls} 工具 · {run.waits} 等待 ·{" "}
+                <code title={run.taskId}>{shortId(run.taskId, 15)}</code>
+              </span>
+            </div>
+            <strong className={`agent-run-status tone-${run.tone}`}>{run.status}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function agentRunSummary(seed: EventRecord, events: EventRecord[]): AgentRunSummary {
+  const payload = seed.event.payload as Record<string, unknown>;
+  const taskId = seed.event.task_id;
+  const ownEvents = events.filter((record) => record.event.task_id === taskId);
+  const eventTypes = ownEvents.map((record) => record.event.type);
+  const kind = String(payload.agent_run_kind ?? "assignment");
+  const agent = agentLabel(String(payload.agent_id ?? "agent"));
+  const stage = stageLabel(String(payload.stage_id ?? ""));
+  const label = kind === "peer" ? `${agent} · 对账响应 / Peer response` : `${agent} · ${stage}`;
+  const lastWait = eventTypes.lastIndexOf("agent.waiting");
+  const resumed = lastWait >= 0 && eventTypes.slice(lastWait + 1).includes("model.requested");
+
+  let status = "执行中 / Running";
+  let tone: AgentRunTone = "info";
+  if (eventTypes.includes("agent.result.rejected")) {
+    status = "被拒 / Rejected";
+    tone = "danger";
+  } else if (eventTypes.includes("agent.result.promoted")) {
+    status = "已晋升 / Promoted";
+    tone = "success";
+  } else if (eventTypes.includes("agent.submitted")) {
+    status = "已提交 / Submitted";
+    tone = "warning";
+  } else if (lastWait >= 0 && !resumed) {
+    status = "等待 / Waiting";
+    tone = "warning";
+  }
+
+  return {
+    taskId,
+    label,
+    kind,
+    status,
+    tone,
+    modelTurns: eventTypes.filter((type) => type === "model.requested").length,
+    toolCalls: eventTypes.filter((type) => type === "tool.completed").length,
+    waits: eventTypes.filter((type) => type === "agent.waiting").length,
+  };
+}
+
+function stageLabel(stage: string): string {
+  const labels: Record<string, string> = {
+    evidence: "证据采集 / Evidence",
+    artifact: "制品构建 / Artifact",
+    review: "独立审查 / Review",
+  };
+  return labels[stage] ?? (stage || "任务执行 / Assignment");
 }
 
 function MemoryInspector({ snapshot, events }: { snapshot: Snapshot | null; events: EventRecord[] }) {
