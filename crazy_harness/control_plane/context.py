@@ -50,7 +50,13 @@ class PersistentContextCompiler:
         self.offload_chars = offload_chars
         self.recent_event_limit = recent_event_limit
 
-    def compile(self, *, agent_id: str, trigger: Event) -> CompiledContext:
+    def compile(
+        self,
+        *,
+        agent_id: str,
+        trigger: Event,
+        context_key: str | None = None,
+    ) -> CompiledContext:
         all_events = self.store.read_all(run_id=trigger.run_id)
         active = [event for event in all_events if event.type not in self._HYGIENE_TYPES]
         selected = active[-self.recent_event_limit :]
@@ -96,7 +102,7 @@ class PersistentContextCompiler:
         )
         context_event = self.store.append(
             Event(
-                id=str(uuid5(NAMESPACE_URL, f"context:{trigger.id}:{agent_id}")),
+                id=str(uuid5(NAMESPACE_URL, f"context:{context_key or trigger.id}:{agent_id}")),
                 run_id=trigger.run_id,
                 task_id=trigger.task_id,
                 type="context.compiled",
@@ -104,6 +110,7 @@ class PersistentContextCompiler:
                 payload={
                     "agent_id": agent_id,
                     "trigger_event_id": trigger.id,
+                    "context_key": context_key,
                     "context_epoch": 1,
                     "manifest": manifest.model_dump(mode="json"),
                     "microcompact": {

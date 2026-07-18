@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -19,13 +20,26 @@ from crazy_harness.control_plane.kernel import (
     KernelDecision,
 )
 from crazy_harness.control_plane.store import SQLiteEventStore
+from crazy_harness.core.a2a.coordinator import AgentStatus
+from crazy_harness.core.a2a.messages import AgentCard
+from crazy_harness.core.a2a.orchestration import (
+    CapabilitySupervisorPolicy,
+    SupervisorContext,
+    SupervisorPolicy,
+    TeamContract,
+)
 from crazy_harness.core.agents import AgentLoop, AssignmentContract
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.events import Event
 from crazy_harness.core.models import DeepSeekOpenAIProvider, FakeModelProvider, ModelProvider
 from crazy_harness.core.runtime import DurableMailbox
 from crazy_harness.core.runtime.mailbox import Delivery
-from crazy_harness.taskpacks import EvidenceResearchTaskPack, RepoMaintainerTaskPack, TaskPack
+from crazy_harness.taskpacks import (
+    EvidenceResearchTaskPack,
+    RepoMaintainerTaskPack,
+    ResidentDemoTeamTaskPack,
+    TaskPack,
+)
 
 
 class TaskRequest(BaseModel):
@@ -155,12 +169,19 @@ class ResidentRuntime:
     AGENTS = (
         ("coordinator", "Coordinator / 总控", ["orchestration.plan", "completion.gate"]),
         ("scout", "Scout / 侦察", ["evidence.collect", "peer.respond"]),
+        ("scout-backup", "Scout Backup / 侦察备用", ["evidence.collect", "peer.respond"]),
         ("builder", "Builder / 构建", ["artifact.compose", "peer.request"]),
         ("reviewer", "Reviewer / 审查", ["artifact.review", "evidence.verify"]),
         ("generalist", "Generalist / 通用执行", ["repo.inspect", "repo.edit", "test.verify", "research.browse", "research.cite"]),
     )
 
-    def __init__(self, data_dir: Path, *, model_factory: ModelFactory | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        model_factory: ModelFactory | None = None,
+        supervisor_policy: SupervisorPolicy | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteEventStore(self.data_dir / "control_plane.db")
@@ -169,6 +190,9 @@ class ResidentRuntime:
         self.kernel = ControlKernel(self.store, fault_controller=self.faults)
         self.context = PersistentContextCompiler(self.store, self.artifacts)
         self.scheduler = ResidentScheduler(self.store, self.faults)
+        self.team_pack = ResidentDemoTeamTaskPack()
+        self.team_contract = self.team_pack.team_contract()
+        self.supervisor_policy = supervisor_policy or CapabilitySupervisorPolicy()
         self.repo_maintainer_pack = RepoMaintainerTaskPack(self.data_dir)
         self.evidence_research_pack = EvidenceResearchTaskPack(self.data_dir)
         self.task_packs: dict[str, TaskPack] = {
@@ -183,8 +207,17 @@ class ResidentRuntime:
             for worker_id in [*(agent[0] for agent in self.AGENTS), "dream.worker", "context.evolver"]
         }
         self._register_agents()
-        self.scheduler.register("coordinator", self.mailboxes["coordinator"], self._coordinator_step)
-        self.scheduler.register("scout", self.mailboxes["scout"], self._scout_step)
+        self.scheduler.register("coordinator", self.mailboxes["coordinator"], self._supervisor_step)
+        self.scheduler.register(
+            "scout",
+            self.mailboxes["scout"],
+            lambda delivery: self._scout_step(delivery, agent_id="scout"),
+        )
+        self.scheduler.register(
+            "scout-backup",
+            self.mailboxes["scout-backup"],
+            lambda delivery: self._scout_step(delivery, agent_id="scout-backup"),
+        )
         self.scheduler.register("builder", self.mailboxes["builder"], self._builder_step)
         self.scheduler.register("reviewer", self.mailboxes["reviewer"], self._reviewer_step)
         self.scheduler.register("generalist", self.mailboxes["generalist"], self._single_agent_step)
@@ -209,14 +242,20 @@ class ResidentRuntime:
 
     def _serve(self) -> None:
         while not self._stop.is_set():
-            if not self.scheduler.run_once():
-                self.scheduler.wait()
+            if self.expire_due_leases():
+                continue
+            if self.scheduler.run_once():
+                continue
+            self.scheduler.wait(self._seconds_until_next_lease())
 
     def submit_task(self, request: TaskRequest) -> RunCreated:
         if request.execution_mode == "single":
             return self._submit_single_task(request)
         if request.model_mode != "scripted":
-            raise ValueError("team mode is scripted in v0.1; use execution_mode='single' for DeepSeek")
+            raise ValueError(
+                "team mode currently uses a deterministic Supervisor with scripted "
+                "workers; use execution_mode='single' for DeepSeek"
+            )
         if request.task_pack not in {None, "resident-demo"}:
             raise ValueError("team mode currently supports only the resident-demo task pack")
         return self._submit_team_task(request)
@@ -237,8 +276,10 @@ class ResidentRuntime:
                     "brief": request.brief,
                     "model_mode": request.model_mode,
                     "execution_mode": "team",
-                    "task_pack": "resident-demo",
-                    "behavior_version": "v0.1.0",
+                    "task_pack": self.team_pack.task_pack_id,
+                    "team_contract": self.team_contract.model_dump(mode="json"),
+                    "supervisor_policy": type(self.supervisor_policy).__name__,
+                    "behavior_version": "v0.4.0-dev",
                 },
             )
         )
@@ -311,11 +352,101 @@ class ResidentRuntime:
 
     def run_until_idle(self, *, max_steps: int = 100) -> int:
         steps = 0
-        while steps < max_steps and self.scheduler.run_once():
-            steps += 1
+        while steps < max_steps:
+            if self.scheduler.run_once():
+                steps += 1
+                continue
+            expired = self.expire_due_leases()
+            if expired:
+                steps += expired
+                continue
+            break
         if steps == max_steps and self.scheduler.has_pending():
             raise RuntimeError(f"resident runtime did not become idle after {max_steps} steps")
         return steps
+
+    def expire_due_leases(self, *, now: datetime | None = None) -> int:
+        """Persist timeout facts and wake Supervisor; wall-clock memory is not authority."""
+
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("lease expiry clock must be timezone-aware")
+        expired_count = 0
+        active_leases = [
+            item for item in self.store.snapshot()["leases"] if item.get("status") == "active"
+        ]
+        for lease in active_leases:
+            deadline = datetime.fromisoformat(str(lease["expires_at"]))
+            if deadline > current:
+                continue
+            assignment_id = str(lease["assignment_id"])
+            identity = next(
+                (
+                    event
+                    for event in self.store.read_all(run_id=str(lease["run_id"]))
+                    if event.type == "assignment.created"
+                    and event.payload.get("assignment_id") == assignment_id
+                ),
+                None,
+            )
+            if identity is None:
+                continue
+            self._append_deterministic(
+                identity,
+                f"assignment-expired:{assignment_id}",
+                "assignment.expired",
+                {
+                    "assignment_id": assignment_id,
+                    "stage_id": lease.get("stage_id"),
+                    "agent_id": lease["agent_id"],
+                    "reason": "lease_deadline_exceeded",
+                },
+                source="runtime.deadline",
+            )
+            self._append_deterministic(
+                identity,
+                f"agent-degraded:{assignment_id}",
+                "runtime.agent.degraded",
+                {
+                    "agent_id": lease["agent_id"],
+                    "assignment_id": assignment_id,
+                    "reason": "lease_deadline_exceeded",
+                },
+                source="runtime.deadline",
+            )
+            expired = self._append_deterministic(
+                identity,
+                f"lease-expired:{assignment_id}",
+                "assignment.lease.expired",
+                {
+                    "lease_id": lease["lease_id"],
+                    "assignment_id": assignment_id,
+                    "stage_id": lease.get("stage_id"),
+                    "agent_id": lease["agent_id"],
+                    "expires_at": lease["expires_at"],
+                    "expired_at": deadline.isoformat(),
+                    "reason": "deadline_exceeded",
+                },
+                source="runtime.deadline",
+            )
+            self._deliver(
+                "coordinator",
+                expired,
+                delivery_id=f"lease-expired:{assignment_id}",
+            )
+            expired_count += 1
+        return expired_count
+
+    def _seconds_until_next_lease(self, *, now: datetime | None = None) -> float | None:
+        current = now or datetime.now(timezone.utc)
+        deadlines = [
+            datetime.fromisoformat(str(item["expires_at"]))
+            for item in self.store.snapshot()["leases"]
+            if item.get("status") == "active"
+        ]
+        if not deadlines:
+            return None
+        return max(0.0, (min(deadlines) - current).total_seconds())
 
     def arm_fault(self, point: str) -> None:
         self.faults.arm(point)
@@ -556,40 +687,38 @@ class ResidentRuntime:
                 )
             )
 
-    def _coordinator_step(self, delivery: Delivery) -> None:
+    def _supervisor_step(self, delivery: Delivery) -> None:
         event = delivery.event
-        if event.type == "event.external.received":
-            self._propose_plan(
-                event,
-                revision=1,
-                target="scout",
-                goal="Collect verifiable evidence for the incoming task.",
-                exit_criteria=["tool evidence is persisted", "evidence refs are returned"],
-                reason="new external event requires evidence first",
-            )
+        if event.type not in {
+            "event.external.received",
+            "agent.result.submitted",
+            "assignment.lease.expired",
+            "agent.nudged",
+        }:
             return
-        if event.type != "agent.result.submitted":
+        contract = self._team_contract_for(event.run_id)
+        patch = self.supervisor_policy.propose(
+            contract,
+            self._supervisor_context(event, contract),
+        )
+        decision = self._propose(
+            agent_id="coordinator",
+            trigger=event,
+            kind=CommandKind.PLAN_PATCH,
+            payload=patch.command_payload(),
+            key=f"{event.run_id}:coordinator:plan:{patch.revision}",
+        )
+        if not decision.accepted:
             return
-        result_kind = event.payload.get("result_kind")
-        if result_kind == "evidence":
-            self._propose_plan(
+        if patch.blocked_reason:
+            self._append_deterministic(
                 event,
-                revision=2,
-                target="builder",
-                goal="Compose a bounded execution artifact from the collected evidence.",
-                exit_criteria=["one peer reconciliation is complete", "artifact cites evidence"],
-                reason="evidence is ready; builder can synthesize",
+                f"orchestration-paused:{patch.revision}",
+                "run.paused",
+                {"reason": patch.blocked_reason, "plan_revision": patch.revision},
+                source="runtime.supervisor",
             )
-        elif result_kind == "artifact":
-            self._propose_plan(
-                event,
-                revision=3,
-                target="reviewer",
-                goal="Independently review the artifact and its evidence.",
-                exit_criteria=["review decision is explicit", "decision cites evidence"],
-                reason="artifact requires an independent gate",
-            )
-        elif result_kind == "review":
+        if patch.completion_ready:
             self._propose(
                 agent_id="coordinator",
                 trigger=event,
@@ -598,55 +727,167 @@ class ResidentRuntime:
                 key=f"{event.run_id}:coordinator:complete",
             )
 
-    def _propose_plan(
+    def _team_contract_for(self, run_id: str) -> TeamContract:
+        created = next(
+            (
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            ),
+            None,
+        )
+        if created is None:
+            raise RuntimeError(f"team run has no run.created event: {run_id}")
+        persisted = created.payload.get("team_contract")
+        return TeamContract.model_validate(persisted) if persisted else self.team_contract
+
+    def _supervisor_context(
         self,
         trigger: Event,
-        *,
-        revision: int,
-        target: str,
-        goal: str,
-        exit_criteria: list[str],
-        reason: str,
-    ) -> None:
-        assignment_id = f"{trigger.run_id}:{target}"
-        stages = [
-            {"order": 1, "agent_id": "scout", "state": "active" if target == "scout" else "done"},
-            {
-                "order": 2,
-                "agent_id": "builder",
-                "state": "active" if target == "builder" else ("pending" if revision < 2 else "done"),
-            },
-            {
-                "order": 3,
-                "agent_id": "reviewer",
-                "state": "active" if target == "reviewer" else "pending",
-            },
+        contract: TeamContract,
+    ) -> SupervisorContext:
+        del contract
+        snapshot = self.store.snapshot(run_id=trigger.run_id)
+        assignments = snapshot["assignments"]
+        active_leases = [
+            lease for lease in snapshot["leases"] if lease.get("status") == "active"
         ]
-        self._propose(
-            agent_id="coordinator",
-            trigger=trigger,
-            kind=CommandKind.PLAN_PATCH,
-            payload={
-                "revision": revision,
-                "stages": stages,
-                "reason": reason,
-                "next_assignment": {
-                    "assignment_id": assignment_id,
-                    "agent_id": target,
-                    "goal": goal,
-                    "exit_criteria": exit_criteria,
-                    "contract_version": 1,
-                },
-            },
-            key=f"{trigger.run_id}:coordinator:plan:{revision}:{target}",
+        completed = frozenset(
+            str(item["stage_id"])
+            for item in assignments
+            if item.get("stage_id") and item.get("status") in {"succeeded", "completed"}
+        )
+        attempts: dict[str, int] = {}
+        for item in assignments:
+            stage_id = item.get("stage_id")
+            if stage_id:
+                attempts[str(stage_id)] = max(
+                    attempts.get(str(stage_id), 0),
+                    int(item.get("attempt", 1)),
+                )
+
+        active_loads: dict[str, int] = {}
+        active_stage_agents: dict[str, str] = {}
+        for lease in active_leases:
+            agent_id = str(lease["agent_id"])
+            active_loads[agent_id] = active_loads.get(agent_id, 0) + 1
+            if lease.get("stage_id"):
+                active_stage_agents[str(lease["stage_id"])] = agent_id
+
+        cards = tuple(
+            AgentCard(
+                agent_id=str(agent["agent_id"]),
+                role=str(agent["role"]),
+                capabilities=list(agent.get("capabilities", [])),
+                max_concurrency=int(agent.get("max_concurrency", 1)),
+            )
+            for agent in snapshot["agents"]
+        )
+        agent_states = {str(agent["agent_id"]): agent for agent in snapshot["agents"]}
+        statuses = {
+            card.agent_id: AgentStatus(
+                agent_states[card.agent_id].get("status", AgentStatus.OFFLINE.value)
+            )
+            for card in cards
+        }
+        revisions = [
+            int(event.payload["revision"])
+            for event in self.store.read_all(run_id=trigger.run_id)
+            if event.type == "orchestration.plan.patched"
+        ]
+        run = self.store.projection("run", trigger.run_id) or {}
+        return SupervisorContext(
+            run_id=trigger.run_id,
+            task_id=trigger.task_id,
+            brief=str(run.get("brief", "")),
+            revision=max(revisions, default=0),
+            cards=cards,
+            statuses=statuses,
+            completed_stage_ids=completed,
+            active_stage_ids=frozenset(active_stage_agents),
+            active_stage_agents=active_stage_agents,
+            attempts=attempts,
+            active_loads=active_loads,
         )
 
-    def _scout_step(self, delivery: Delivery) -> None:
+    def _begin_leased_step(self, trigger: Event, *, agent_id: str) -> bool:
+        assignment_id = trigger.payload.get("assignment_id")
+        assignment = (
+            self.store.projection("assignment", str(assignment_id))
+            if assignment_id
+            else None
+        )
+        lease = (
+            self.store.projection("lease", str(assignment_id))
+            if assignment_id
+            else None
+        )
+        current_expiry = None
+        if lease is not None and lease.get("expires_at"):
+            try:
+                current_expiry = datetime.fromisoformat(str(lease["expires_at"]))
+            except ValueError:
+                current_expiry = None
+        current = datetime.now(timezone.utc)
+        if (
+            assignment is None
+            or assignment.get("agent_id") != agent_id
+            or lease is None
+            or lease.get("status") != "active"
+            or lease.get("agent_id") != agent_id
+            or current_expiry is None
+            or current_expiry.tzinfo is None
+            or current_expiry <= current
+        ):
+            self._append_deterministic(
+                trigger,
+                f"stale-delivery:{agent_id}:{assignment_id}:{trigger.id}",
+                "assignment.delivery.stale",
+                {
+                    "assignment_id": assignment_id,
+                    "agent_id": agent_id,
+                    "delivery_event_id": trigger.id,
+                    "reason": "active_lease_not_held",
+                },
+                source="runtime.scheduler",
+            )
+            return False
+
+        lease_seconds = int(lease.get("lease_seconds", 30))
+        proposed_expiry = current + timedelta(seconds=lease_seconds)
+        expires_at = max(current_expiry, proposed_expiry)
+        self._append_deterministic(
+            trigger,
+            f"heartbeat:{agent_id}:{assignment_id}:{trigger.id}",
+            "runtime.agent.heartbeat",
+            {"agent_id": agent_id, "assignment_id": assignment_id},
+            source="runtime.scheduler",
+        )
+        self._append_deterministic(
+            trigger,
+            f"lease-renewed:{agent_id}:{assignment_id}:{trigger.id}",
+            "assignment.lease.renewed",
+            {
+                "lease_id": lease["lease_id"],
+                "assignment_id": assignment_id,
+                "stage_id": lease.get("stage_id"),
+                "agent_id": agent_id,
+                "lease_seconds": lease_seconds,
+                "renewed_at": current.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            source="runtime.scheduler",
+        )
+        return True
+
+    def _scout_step(self, delivery: Delivery, *, agent_id: str) -> None:
         event = delivery.event
         if event.type == "assignment.created":
+            if not self._begin_leased_step(event, agent_id=agent_id):
+                return
             tool_result = self._collect_evidence(event)
             self._propose(
-                agent_id="scout",
+                agent_id=agent_id,
                 trigger=event,
                 kind=CommandKind.EVIDENCE,
                 payload={
@@ -654,7 +895,7 @@ class ResidentRuntime:
                     "summary": "Repository evidence and deterministic test observations are available.",
                     "evidence_refs": [tool_result.id],
                 },
-                key=f"{event.run_id}:scout:evidence",
+                key=f"{event.run_id}:{agent_id}:{event.payload['assignment_id']}:evidence",
             )
         elif event.type == "a2a.peer.requested":
             evidence_refs = [
@@ -663,7 +904,7 @@ class ResidentRuntime:
                 if item.type in {"evidence.recorded", "tool.completed"}
             ]
             self._propose(
-                agent_id="scout",
+                agent_id=agent_id,
                 trigger=event,
                 kind=CommandKind.PEER_RESPONSE,
                 payload={
@@ -673,28 +914,40 @@ class ResidentRuntime:
                     "evidence_refs": evidence_refs,
                     "correlation_id": event.payload.get("correlation_id"),
                 },
-                key=f"{event.run_id}:scout:peer-response:{event.payload['assignment_id']}",
+                key=f"{event.run_id}:{agent_id}:peer-response:{event.payload['assignment_id']}",
             )
 
     def _builder_step(self, delivery: Delivery) -> None:
         event = delivery.event
         if event.type == "assignment.created":
+            if not self._begin_leased_step(event, agent_id="builder"):
+                return
+            evidence_agent = next(
+                (
+                    item.payload.get("agent_id")
+                    for item in reversed(self.store.read_all(run_id=event.run_id))
+                    if item.type == "evidence.recorded"
+                ),
+                "scout",
+            )
             self._propose(
                 agent_id="builder",
                 trigger=event,
                 kind=CommandKind.PEER_REQUEST,
                 payload={
                     "assignment_id": event.payload["assignment_id"],
-                    "receiver": "scout",
+                    "receiver": evidence_agent,
                     "scope": ["evidence"],
                     "permissions": ["read"],
                     "depth": 1,
                     "peer_budget": 1,
                     "brief": "Confirm that the evidence is current before I compose the artifact.",
                 },
-                key=f"{event.run_id}:builder:peer-request",
+                key=f"{event.run_id}:builder:{event.payload['assignment_id']}:peer-request",
             )
         elif event.type == "a2a.peer.responded":
+            if not self._begin_leased_step(event, agent_id="builder"):
+                return
             self._propose(
                 agent_id="builder",
                 trigger=event,
@@ -709,12 +962,14 @@ class ResidentRuntime:
                         "rollback": "restore the previous immutable behavior version",
                     },
                 },
-                key=f"{event.run_id}:builder:artifact",
+                key=f"{event.run_id}:builder:{event.payload['assignment_id']}:artifact",
             )
 
     def _reviewer_step(self, delivery: Delivery) -> None:
         event = delivery.event
         if event.type != "assignment.created":
+            return
+        if not self._begin_leased_step(event, agent_id="reviewer"):
             return
         evidence_refs = [
             item.id
@@ -731,7 +986,7 @@ class ResidentRuntime:
                 "summary": "Evidence references exist, A2A depth is bounded, and rollback is explicit.",
                 "evidence_refs": evidence_refs,
             },
-            key=f"{event.run_id}:reviewer:review",
+            key=f"{event.run_id}:reviewer:{event.payload['assignment_id']}:review",
         )
 
     def _dream_step(self, delivery: Delivery) -> None:
@@ -869,7 +1124,7 @@ class ResidentRuntime:
             self._route_decision(decision)
             return decision
 
-        compiled = self.context.compile(agent_id=agent_id, trigger=trigger)
+        compiled = self.context.compile(agent_id=agent_id, trigger=trigger, context_key=key)
         request = self._append_deterministic(
             trigger,
             f"model-request:{key}",

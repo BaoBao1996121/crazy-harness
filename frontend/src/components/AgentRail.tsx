@@ -3,10 +3,12 @@ import type { LucideIcon } from "lucide-react";
 
 import type { Snapshot } from "../api/client";
 import { agentLabel, capabilityLabel, contentLabel, statusLabel } from "../lib/i18n";
+import { leaseSummary } from "../lib/leases";
 
 const AGENT_ICON: Record<string, LucideIcon> = {
   coordinator: Network,
   scout: Radar,
+  "scout-backup": Radar,
   builder: Hammer,
   reviewer: ShieldCheck,
   generalist: Bot,
@@ -19,6 +21,7 @@ interface AgentRailProps {
 export function AgentRail({ snapshot }: AgentRailProps) {
   const agents = snapshot?.agents ?? [];
   const assignments = snapshot?.assignments ?? [];
+  const leases = snapshot?.leases ?? [];
   return (
     <aside className="agent-rail">
       <div className="rail-heading">
@@ -33,8 +36,13 @@ export function AgentRail({ snapshot }: AgentRailProps) {
         {agents.map((agent) => {
           const Icon = AGENT_ICON[agent.agent_id] ?? Boxes;
           const assignment = assignments.find(
-            (item) => item.agent_id === agent.agent_id && !["succeeded", "failed"].includes(item.status),
+            (item) => item.agent_id === agent.agent_id
+              && !["succeeded", "failed", "completed", "expired"].includes(item.status),
           );
+          const lease = assignment
+            ? leases.find((item) => item.assignment_id === assignment.assignment_id)
+            : undefined;
+          const leaseCopy = leaseSummary(lease);
           return (
             <div className={`agent-row agent-${agent.agent_id}`} key={agent.agent_id}>
               <div className="agent-icon" aria-hidden="true"><Icon size={18} /></div>
@@ -46,6 +54,9 @@ export function AgentRail({ snapshot }: AgentRailProps) {
                 <span>{statusLabel(agent.status)}</span>
                 <small>{assignment ? contentLabel(assignment.goal) : capabilityLabel(agent.capabilities?.[0])}</small>
               </div>
+                {leaseCopy ? (
+                  <small className={`lease-copy ${lease?.status}`}>{leaseCopy}</small>
+                ) : null}
               <div className="mailbox-count" title="待处理的持久邮箱投递 / Pending durable mailbox deliveries">
                 <Mail size={13} aria-hidden="true" />
                 <span>{agent.mailbox_pending}</span>
@@ -63,15 +74,19 @@ export function AgentRail({ snapshot }: AgentRailProps) {
         <div className="assignment-list">
           {assignments.length === 0 ? (
             <div className="rail-empty">暂无运行 / No active run</div>
-          ) : assignments.map((assignment) => (
-            <div className="assignment-row" key={assignment.assignment_id}>
-              <span className={`assignment-state ${assignment.status}`} />
-              <div>
-                <strong>{agentLabel(assignment.agent_id)}</strong>
-                <span>{statusLabel(assignment.status)}</span>
+          ) : assignments.map((assignment) => {
+            const lease = leases.find((item) => item.assignment_id === assignment.assignment_id);
+            const leaseCopy = leaseSummary(lease);
+            return (
+              <div className="assignment-row" key={assignment.assignment_id}>
+                <span className={`assignment-state ${assignment.status}`} />
+                <div>
+                  <strong>{agentLabel(assignment.agent_id)}</strong>
+                  <span title={leaseCopy ?? undefined}>{leaseCopy ?? statusLabel(assignment.status)}</span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

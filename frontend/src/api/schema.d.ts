@@ -172,6 +172,15 @@ export interface components {
             /** Status */
             status: string;
             /**
+             * Max Concurrency
+             * @default 1
+             */
+            max_concurrency: number;
+            /** Last Heartbeat At */
+            last_heartbeat_at?: string | null;
+            /** Active Assignment Id */
+            active_assignment_id?: string | null;
+            /**
              * Mailbox Pending
              * @default 0
              */
@@ -416,6 +425,35 @@ export interface components {
              */
             recovered: boolean;
         };
+        /** LeaseView */
+        LeaseView: {
+            /** Lease Id */
+            lease_id: string;
+            /** Assignment Id */
+            assignment_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Status */
+            status: string;
+            /** Stage Id */
+            stage_id?: string | null;
+            /** Acquired At */
+            acquired_at: string;
+            /** Expires At */
+            expires_at: string;
+            /** Renewed At */
+            renewed_at?: string | null;
+            /** Released At */
+            released_at?: string | null;
+            /** Expired At */
+            expired_at?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** MemoryView */
         MemoryView: {
             /** Candidate Id */
@@ -527,6 +565,8 @@ export interface components {
             agents: components["schemas"]["AgentView"][];
             /** Assignments */
             assignments: components["schemas"]["AssignmentView"][];
+            /** Leases */
+            leases: components["schemas"]["LeaseView"][];
             /** Contexts */
             contexts: components["schemas"]["ContextView"][];
             /** Capability Manifests */

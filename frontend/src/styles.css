@@ -340,6 +340,7 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
 
 .agent-coordinator { --agent-color: var(--cyan); }
 .agent-scout { --agent-color: var(--mint); }
+.agent-scout-backup { --agent-color: var(--cyan); }
 .agent-builder { --agent-color: var(--amber); }
 .agent-reviewer { --agent-color: var(--coral); }
 
@@ -367,6 +368,9 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.agent-copy .lease-copy { color: var(--cyan); }
+.agent-copy .lease-copy.expired { color: var(--coral); }
+.agent-copy .lease-copy.released { color: var(--mint); }
 
 .status-dot {
   flex: 0 0 7px;
@@ -403,6 +407,7 @@ h2 { margin-top: 4px; color: var(--white); font-size: 15px; line-height: 1.25; }
 .assignment-state.running { background: var(--cyan); }
 .assignment-state.waiting { background: var(--amber); }
 .assignment-state.succeeded { background: var(--mint); }
+.assignment-state.expired { background: var(--coral); }
 .rail-empty { padding: 12px 0; color: var(--faint); font-size: 10px; }
 
 .fact-source {
