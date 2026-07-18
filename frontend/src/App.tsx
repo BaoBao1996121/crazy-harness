@@ -27,6 +27,7 @@ export default function App() {
         eventCount={control.events.length}
         busy={control.busy}
         onNewRun={() => setDialogOpen(true)}
+        onCancel={() => void control.cancelRun()}
         onChaos={openChaos}
       />
       <div className="workspace">

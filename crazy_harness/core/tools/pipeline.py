@@ -15,6 +15,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from crazy_harness.core.hooks import HookManager
+from crazy_harness.core.dispatch import DispatchCancelled, raise_if_dispatch_cancelled
 from crazy_harness.core.tools.concurrency import (
     BatchExecutionResult,
     ConsecutiveSafePlanner,
@@ -385,6 +386,7 @@ class ToolPipeline:
         is_primary: bool,
         on_started: Callable[[OperationRecord, ToolInvocation], None] | None,
     ) -> SettledToolResult:
+        raise_if_dispatch_cancelled()
         record = self.ledger.get(planned.operation_id)
         if not is_primary:
             return self._existing_result(invocation, record, duplicate=True)
@@ -403,7 +405,10 @@ class ToolPipeline:
             return self._existing_result(invocation, self.ledger.get(record.operation_id))
 
         try:
+            raise_if_dispatch_cancelled()
             result = self.registry.call(invocation.call)
+        except DispatchCancelled:
+            raise
         except OperationOutcomeUnknown as exc:
             self.ledger.mark_unknown(record.operation_id, str(exc))
             return SettledToolResult(

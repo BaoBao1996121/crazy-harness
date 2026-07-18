@@ -42,7 +42,7 @@ jobs:
       - name: Ruff
         run: python -m ruff check --no-cache crazy_harness tests work labs/16h_sprint
       - name: Tests
-        run: python -m pytest -q -m "not llm"
+        run: python -m pytest -q -m "not llm and not nightly"
 
   frontend:
     timeout-minutes: 15

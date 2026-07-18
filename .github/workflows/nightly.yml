@@ -1,0 +1,38 @@
+name: nightly-regression
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-regression
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stress-and-chaos:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      CRAZY_NIGHTLY_LLM: ${{ vars.CRAZY_NIGHTLY_LLM }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e ".[dev,browser,mcp]"
+      - name: Install Chromium and Linux dependencies
+        run: python -m playwright install --with-deps chromium
+      - name: Deterministic nightly suite
+        run: python -m pytest -q -m "nightly and not llm"
+      - name: Opt-in live model suite
+        if: ${{ env.DEEPSEEK_API_KEY != '' && env.CRAZY_NIGHTLY_LLM == '1' }}
+        env:
+          CRAZY_RUN_LLM_TESTS: "1"
+        run: python -m pytest -q -m llm

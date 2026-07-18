@@ -32,9 +32,9 @@ def test_every_team_assignment_runs_through_the_canonical_agent_loop(tmp_path):
     created, events = _team_run(runtime)
 
     assert runtime.snapshot(created.run_id)["run"]["status"] == "succeeded"
-    assert runtime.snapshot(created.run_id)["run"]["behavior_version"] == "v0.5.0-dev"
+    assert runtime.snapshot(created.run_id)["run"]["behavior_version"] == "v0.6.0-dev"
     assignments = [event for event in events if event.type == "assignment.created"]
-    assert len(assignments) == 3
+    assert len(assignments) == 4
     for assignment in assignments:
         child = _child_events(events, assignment.payload["assignment_id"])
         child_types = [event.type for event in child]
@@ -52,7 +52,7 @@ def test_every_team_assignment_runs_through_the_canonical_agent_loop(tmp_path):
         for event in events
         if event.type in {"evidence.recorded", "artifact.recorded", "review.recorded"}
     ]
-    assert len(formal_results) == 3
+    assert len(formal_results) == 4
     for result in formal_results:
         assert result.payload["agent_run_id"].endswith(":agent-run")
         assert result.payload["submission_event_id"]
@@ -1142,8 +1142,10 @@ def test_peer_request_is_rejected_after_its_assignment_lease_expires(tmp_path):
     assert runtime.scheduler.run_once() is True
     assignment = runtime.snapshot(created.run_id)["assignments"][0]
     lease = runtime.snapshot(created.run_id)["leases"][0]
-    after_deadline = datetime.fromisoformat(lease["expires_at"]) + timedelta(seconds=1)
-    assert runtime.expire_due_leases(now=after_deadline) == 1
+    deadline = datetime.fromisoformat(lease["expires_at"])
+    assert runtime.expire_due_leases(
+        now=deadline + timedelta(seconds=1)
+    ) == 2
 
     decision = runtime.kernel.submit(
         _peer_candidate(

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type EventRecord, type FaultPoint, type Snapshot, type TaskRequest } from "../api/client";
+import { createAsyncThrottle } from "../lib/throttle";
 
 type StreamState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -30,7 +31,7 @@ export function useControlPlane() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const cursorRef = useRef(0);
-  const snapshotTimer = useRef<number | null>(null);
+  const followLiveRef = useRef(followLive);
 
   const refreshSnapshot = useCallback(async (targetRun = runId) => {
     try {
@@ -52,10 +53,9 @@ export function useControlPlane() {
     }
   }, [runId]);
 
-  const queueSnapshot = useCallback((targetRun: string) => {
-    if (snapshotTimer.current !== null) window.clearTimeout(snapshotTimer.current);
-    snapshotTimer.current = window.setTimeout(() => void refreshSnapshot(targetRun), 180);
-  }, [refreshSnapshot]);
+  useEffect(() => {
+    followLiveRef.current = followLive;
+  }, [followLive]);
 
   useEffect(() => {
     if (!runId) {
@@ -65,6 +65,10 @@ export function useControlPlane() {
     }
     let disposed = false;
     let source: EventSource | null = null;
+    const snapshotThrottle = createAsyncThrottle(
+      async (targetRun: string) => refreshSnapshot(targetRun),
+      180,
+    );
     setStreamState("connecting");
 
     const connect = async () => {
@@ -90,8 +94,8 @@ export function useControlPlane() {
             if (current.some((item) => item.cursor === record.cursor)) return current;
             return [...current, record];
           });
-          if (followLive && frame.event.id) setSelectedId(frame.event.id);
-          queueSnapshot(runId);
+          if (followLiveRef.current && frame.event.id) setSelectedId(frame.event.id);
+          snapshotThrottle.schedule(runId);
         });
         source.addEventListener("error", () => setStreamState("reconnecting"));
       } catch (error) {
@@ -105,12 +109,9 @@ export function useControlPlane() {
     return () => {
       disposed = true;
       source?.close();
+      snapshotThrottle.cancel();
     };
-  }, [followLive, queueSnapshot, refreshSnapshot, runId]);
-
-  useEffect(() => () => {
-    if (snapshotTimer.current !== null) window.clearTimeout(snapshotTimer.current);
-  }, []);
+  }, [refreshSnapshot, runId]);
 
   const createRun = useCallback(async (request: TaskRequest) => {
     setBusy(true);
@@ -129,6 +130,23 @@ export function useControlPlane() {
       setBusy(false);
     }
   }, []);
+
+  const cancelRun = useCallback(async () => {
+    if (!runId) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await api.cancelRun(runId);
+      setNotice(
+        `取消请求已提交 / Cancellation requested: ${result.active_cancelled} active · ${result.queued_cancelled} queued`,
+      );
+      await refreshSnapshot(runId);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "取消请求失败 / Cancellation request failed");
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshSnapshot, runId]);
 
   const armFault = useCallback(async (point: FaultPoint) => {
     setBusy(true);
@@ -195,6 +213,7 @@ export function useControlPlane() {
     notice,
     setNotice,
     createRun,
+    cancelRun,
     armFault,
     probeDepth,
     rebuildProjections,

@@ -25,6 +25,7 @@ from crazy_harness.core.context.history import (
 from crazy_harness.core.events import Event
 
 
+@pytest.mark.smoke
 def test_context_manifest_audits_compiled_prompt_deterministically():
     messages = [
         {"role": "system", "content": "latest contract"},

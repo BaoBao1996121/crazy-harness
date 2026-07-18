@@ -20,4 +20,11 @@ describe("Chinese-first control-room labels", () => {
     expect(statusLabel("released")).toBe("已释放 / Released");
     expect(statusLabel("expired")).toBe("已超时 / Expired");
   });
+
+  it("labels scheduler and cancellation states in both languages", () => {
+    expect(statusLabel("accepting")).toBe("接收中 / Accepting");
+    expect(statusLabel("paused")).toBe("已暂停 / Paused");
+    expect(statusLabel("cancelling")).toBe("取消中 / Cancelling");
+    expect(statusLabel("cancelled")).toBe("已取消 / Cancelled");
+  });
 });

@@ -4,8 +4,10 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -20,7 +22,11 @@ from crazy_harness.control_plane.kernel import (
     InjectedKernelCrash,
     KernelDecision,
 )
-from crazy_harness.control_plane.store import SQLiteEventStore
+from crazy_harness.control_plane.store import (
+    SQLiteEventStore,
+    UnfencedAckError,
+    WorkClaimLost,
+)
 from crazy_harness.control_plane.team_workers import TeamWorkerEngine
 from crazy_harness.core.a2a.coordinator import AgentStatus
 from crazy_harness.core.a2a.messages import AgentCard
@@ -39,6 +45,11 @@ from crazy_harness.core.models import (
     ModelProvider,
 )
 from crazy_harness.core.runtime import DurableMailbox
+from crazy_harness.core.dispatch import (
+    DispatchCancelled,
+    DispatchContext,
+    activate_dispatch_context,
+)
 from crazy_harness.core.runtime.mailbox import Delivery
 from crazy_harness.taskpacks import (
     EvidenceResearchTaskPack,
@@ -74,24 +85,171 @@ class ResidentScheduler:
     """A tiny always-on dispatcher; durable mailboxes remain the source of pending work."""
 
     MAX_DELIVERY_FAILURES = 3
+    DEFAULT_WORK_CLAIM_SECONDS = 180
 
     def __init__(
-        self, store: SQLiteEventStore, fault_controller: FaultController
+        self,
+        store: SQLiteEventStore,
+        fault_controller: FaultController,
+        *,
+        max_workers: int = 2,
+        work_claim_seconds: int = DEFAULT_WORK_CLAIM_SECONDS,
     ) -> None:
+        if max_workers < 1:
+            raise ValueError("scheduler max_workers must be positive")
+        if work_claim_seconds < 1:
+            raise ValueError("scheduler work_claim_seconds must be positive")
         self.store = store
         self.fault_controller = fault_controller
-        self._workers: dict[str, tuple[DurableMailbox, Handler]] = {}
+        self._workers: dict[str, tuple[DurableMailbox, Handler, int]] = {}
+        self._max_workers = max_workers
+        self._work_claim_seconds = work_claim_seconds
+        self._owner_id = f"scheduler_{uuid4().hex}"
         self._condition = threading.Condition()
         self._wake_generation = 0
         self._consumed_generation = 0
-        self._run_lock = threading.Lock()
+        self._selection_cursor = 0
+        self._in_flight: dict[
+            tuple[str, str], tuple[Delivery, dict[str, int], DispatchContext]
+        ] = {}
+        self._claim_deadlines: dict[tuple[str, str], datetime] = {}
+        self._completed_steps = 0
+        self._executor: ThreadPoolExecutor | None = None
+        self._accepting = True
+        self._backpressure_signature: tuple[object, ...] | None = None
+        self._cancelled_runs: set[str] = set()
+        self._finalizing: set[tuple[str, str]] = set()
+        self._lost_reservations: set[tuple[str, str]] = set()
+        self._renewer_stop = threading.Event()
+        self._renewer_wake = threading.Event()
+        self._renewer_thread: threading.Thread | None = None
 
     def register(
-        self, worker_id: str, mailbox: DurableMailbox, handler: Handler
+        self,
+        worker_id: str,
+        mailbox: DurableMailbox,
+        handler: Handler,
+        *,
+        max_concurrency: int = 1,
     ) -> None:
+        if max_concurrency < 1:
+            raise ValueError("worker max_concurrency must be positive")
         if worker_id in self._workers:
             raise ValueError(f"worker already registered: {worker_id}")
-        self._workers[worker_id] = (mailbox, handler)
+        self._workers[worker_id] = (mailbox, handler, max_concurrency)
+
+    @property
+    def in_flight_count(self) -> int:
+        with self._condition:
+            return len(self._in_flight)
+
+    @property
+    def completed_steps(self) -> int:
+        with self._condition:
+            return self._completed_steps
+
+    @property
+    def pending_count(self) -> int:
+        with self._condition:
+            return self._pending_count_locked()
+
+    def snapshot(self) -> dict[str, object]:
+        with self._condition:
+            claimed_deliveries = self._active_delivery_claim_keys()
+            workers = []
+            for worker_id, (mailbox, _, capacity) in self._workers.items():
+                active = self._worker_in_flight_locked(worker_id)
+                queued = sum(
+                    (worker_id, delivery.delivery_id) not in self._in_flight
+                    and f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
+                    not in claimed_deliveries
+                    for delivery in mailbox.pending()
+                )
+                workers.append(
+                    {
+                        "worker_id": worker_id,
+                        "active": active,
+                        "capacity": capacity,
+                        "queued": queued,
+                    }
+                )
+            return {
+                "instance_id": self._owner_id,
+                "state": "accepting" if self._accepting else "paused",
+                "policy": "round_robin",
+                "fairness_scope": "process_workers",
+                "active": len(self._in_flight),
+                "capacity": self._max_workers,
+                "queued": sum(int(worker["queued"]) for worker in workers),
+                "workers": workers,
+            }
+
+    def claim_keys_for(
+        self, worker_id: str, mailbox: DurableMailbox, delivery: Delivery
+    ) -> tuple[str, str]:
+        return self._claim_keys(worker_id, mailbox, delivery)
+
+    def resume(self) -> None:
+        with self._condition:
+            self._accepting = True
+            self._condition.notify_all()
+
+    def pause(self) -> None:
+        with self._condition:
+            self._accepting = False
+            self._condition.notify_all()
+
+    def cancel_run(self, run_id: str, *, reason: str) -> int:
+        with self._condition:
+            self._cancelled_runs.add(run_id)
+            targets = [
+                (worker_id, delivery, claims, context)
+                for (worker_id, _), (
+                    delivery,
+                    claims,
+                    context,
+                ) in self._in_flight.items()
+                if delivery.event.run_id == run_id
+            ]
+            for _, _, _, context in targets:
+                context.cancellation.cancel(reason)
+            self._wake_generation += 1
+            self._condition.notify_all()
+        for worker_id, delivery, claims, _ in targets:
+            self._append(
+                delivery.event,
+                "runtime.delivery.cancellation.requested",
+                {
+                    "agent_id": worker_id,
+                    "delivery_id": delivery.delivery_id,
+                    "reason": reason,
+                    "claim_tokens": claims,
+                },
+                key=f"cancel-requested:{delivery.delivery_id}:{reason}",
+            )
+        return len(targets)
+
+    def in_flight_for_run(self, run_id: str) -> int:
+        with self._condition:
+            return sum(
+                delivery.event.run_id == run_id
+                for delivery, _, _ in self._in_flight.values()
+            )
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        with self._condition:
+            self._accepting = False
+            executor = self._executor
+            self._executor = None
+            self._condition.notify_all()
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=False)
+        if wait:
+            with self._condition:
+                self._condition.wait_for(lambda: not self._in_flight)
+            self._stop_renewer()
+        elif self.in_flight_count == 0:
+            self._stop_renewer()
 
     def signal(self) -> None:
         with self._condition:
@@ -110,81 +268,684 @@ class ResidentScheduler:
             return signaled
 
     def has_pending(self) -> bool:
-        return any(mailbox.peek() is not None for mailbox, _ in self._workers.values())
+        return self.pending_count > 0 or self.in_flight_count > 0
+
+    def wait_until_idle(self, *, timeout: float) -> bool:
+        deadline = monotonic() + timeout
+        while True:
+            if self.in_flight_count == 0 and self.pending_count == 0:
+                return True
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            with self._condition:
+                self._condition.wait(min(remaining, 0.05))
+
+    def wait_for_progress(self, *, completed_steps: int, timeout: float) -> bool:
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: self._completed_steps != completed_steps,
+                timeout,
+            )
 
     def run_once(self) -> bool:
-        # API drain 与后台线程可能同时唤醒 Scheduler；选取、处理和 ack 必须是单消费者临界区。
-        with self._run_lock:
-            return self._run_once_serialized()
+        """Execute one reserved Delivery synchronously for deterministic stepping."""
 
-    def _run_once_serialized(self) -> bool:
-        selected = next(
-            (
-                (worker_id, mailbox, handler, delivery)
-                for worker_id, (mailbox, handler) in self._workers.items()
-                if (delivery := mailbox.peek()) is not None
-            ),
-            None,
-        )
+        with self._condition:
+            selected = self._reserve_next_locked()
         if selected is None:
             return False
-        worker_id, mailbox, handler, delivery = selected
-        dead_letter = self._dead_letter(delivery.delivery_id)
-        if dead_letter is not None:
-            self._fail_running_run_for_dead_letter(delivery, dead_letter)
-            mailbox.ack(delivery.delivery_id)
-            return True
-        self._append(
-            delivery.event,
-            "runtime.agent.busy",
-            {"agent_id": worker_id, "delivery_id": delivery.delivery_id},
-        )
+        self._execute_reserved(*selected)
+        return True
+
+    def dispatch_available(self) -> int:
+        """Fill the bounded pool without moving authority out of the Scheduler."""
+
+        dispatched = 0
+        with self._condition:
+            if not self._accepting:
+                return 0
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self._max_workers,
+                    thread_name_prefix="crazy-agent-worker",
+                )
+            while (selected := self._reserve_next_locked()) is not None:
+                try:
+                    self._executor.submit(self._execute_reserved, *selected)
+                except Exception:
+                    worker_id, _, _, delivery, claims, _ = selected
+                    self.store.finish_work_claims(
+                        claims=claims,
+                        owner_id=self._owner_id,
+                        state="released",
+                    )
+                    self._release_reservation_locked(worker_id, delivery)
+                    raise
+                dispatched += 1
+            backpressure = self._backpressure_locked()
+        if backpressure is not None:
+            identity, key, payload = backpressure
+            self._append(
+                identity,
+                "runtime.scheduler.backpressure",
+                payload,
+                key=key,
+            )
+        return dispatched
+
+    def _execute_reserved(
+        self,
+        worker_id: str,
+        mailbox: DurableMailbox,
+        handler: Handler,
+        delivery: Delivery,
+        claims: dict[str, int],
+        dispatch_context: DispatchContext,
+    ) -> None:
+        claim_state = "released"
+        claims_finished = False
         try:
-            handler(delivery)
-            self.fault_controller.trip("before_mailbox_ack")
-        except InjectedKernelCrash as exc:
-            # 不 ack：同一 Delivery 会再次出现，业务命令依靠幂等键恢复。
+            attempt = 1 + sum(
+                event.type == "runtime.delivery.dispatched"
+                and event.payload.get("delivery_id") == delivery.delivery_id
+                for event in self.store.read_all()
+            )
+            with self._condition:
+                worker_in_flight = self._worker_in_flight_locked(worker_id)
+                worker_capacity = self._workers[worker_id][2]
+                active = len(self._in_flight)
+            self._record_claim_state(
+                worker_id=worker_id,
+                delivery=delivery,
+                claims=claims,
+                event_type="runtime.delivery.claim.acquired",
+                state="active",
+            )
             self._append(
                 delivery.event,
-                "runtime.agent.crashed",
+                "runtime.delivery.dispatched",
                 {
                     "agent_id": worker_id,
                     "delivery_id": delivery.delivery_id,
-                    "reason": str(exc),
-                    "redelivery": True,
+                    "attempt": attempt,
+                    "active": active,
+                    "capacity": self._max_workers,
+                    "worker_in_flight": worker_in_flight,
+                    "worker_capacity": worker_capacity,
+                    "claim_tokens": claims,
+                },
+                key=f"dispatch:{worker_id}:{delivery.delivery_id}:{attempt}",
+            )
+            dead_letter = self._dead_letter(delivery.delivery_id)
+            if dead_letter is not None:
+                self._fail_running_run_for_dead_letter(delivery, dead_letter)
+                claims_finished = self._finish_claims_with_ack(
+                    worker_id=worker_id,
+                    mailbox=mailbox,
+                    delivery=delivery,
+                    claims=claims,
+                )
+                return
+            self._append(
+                delivery.event,
+                "runtime.agent.busy",
+                {
+                    "agent_id": worker_id,
+                    "delivery_id": delivery.delivery_id,
+                    "in_flight": worker_in_flight,
+                    "max_concurrency": worker_capacity,
                 },
             )
-            return True
-        except Exception as exc:
-            self._handle_unexpected_failure(
+            try:
+                with activate_dispatch_context(dispatch_context):
+                    dispatch_context.cancellation.raise_if_cancelled()
+                    handler(delivery)
+                    dispatch_context.cancellation.raise_if_cancelled()
+                self.fault_controller.trip("before_mailbox_ack")
+            except DispatchCancelled as exc:
+                if not str(exc).startswith("work claim renewal"):
+                    claims_finished = self._finish_claims_with_ack(
+                        worker_id=worker_id,
+                        mailbox=mailbox,
+                        delivery=delivery,
+                        claims=claims,
+                        allow_cancelled_run=True,
+                    )
+                    if claims_finished:
+                        self._append(
+                            delivery.event,
+                            "runtime.delivery.cancelled",
+                            {
+                                "agent_id": worker_id,
+                                "delivery_id": delivery.delivery_id,
+                                "reason": str(exc),
+                                "mode": "cooperative",
+                            },
+                            key=f"delivery-cancelled:{delivery.delivery_id}",
+                        )
+                return
+            except WorkClaimLost:
+                dispatch_context.cancellation.cancel(
+                    "work claim fencing token was lost"
+                )
+                return
+            except InjectedKernelCrash as exc:
+                # 不 ack：同一 Delivery 会再次出现，业务命令依靠幂等键恢复。
+                try:
+                    with activate_dispatch_context(dispatch_context):
+                        self._append(
+                            delivery.event,
+                            "runtime.agent.crashed",
+                            {
+                                "agent_id": worker_id,
+                                "delivery_id": delivery.delivery_id,
+                                "reason": str(exc),
+                                "redelivery": True,
+                            },
+                        )
+                except WorkClaimLost:
+                    dispatch_context.cancellation.cancel(
+                        "work claim fencing token was lost"
+                    )
+                return
+            except Exception as exc:
+                try:
+                    with activate_dispatch_context(dispatch_context):
+                        should_ack = self._handle_unexpected_failure(
+                            worker_id=worker_id,
+                            delivery=delivery,
+                            error=exc,
+                        )
+                except WorkClaimLost:
+                    dispatch_context.cancellation.cancel(
+                        "work claim fencing token was lost"
+                    )
+                    return
+                if should_ack:
+                    claims_finished = self._finish_claims_with_ack(
+                        worker_id=worker_id,
+                        mailbox=mailbox,
+                        delivery=delivery,
+                        claims=claims,
+                    )
+                return
+
+            claims_finished = self._finish_claims_with_ack(
                 worker_id=worker_id,
                 mailbox=mailbox,
                 delivery=delivery,
-                error=exc,
+                claims=claims,
             )
-            return True
+            if not claims_finished:
+                return
+            with self._condition:
+                remaining = max(0, self._worker_in_flight_locked(worker_id) - 1)
+            self._append(
+                delivery.event,
+                "runtime.agent.step.completed",
+                {
+                    "agent_id": worker_id,
+                    "delivery_id": delivery.delivery_id,
+                    "in_flight": remaining,
+                },
+            )
+            if remaining == 0:
+                self._append(
+                    delivery.event,
+                    "runtime.agent.idle",
+                    {"agent_id": worker_id, "in_flight": 0},
+                )
+        finally:
+            try:
+                if not claims_finished:
+                    with self._condition:
+                        self._finalizing.add((worker_id, delivery.delivery_id))
+                    finished = self.store.finish_work_claims(
+                        claims=claims,
+                        owner_id=self._owner_id,
+                        state=claim_state,
+                    )
+                    if not finished:
+                        self._record_claim_lost(
+                            worker_id=worker_id,
+                            delivery=delivery,
+                            claims=claims,
+                            reason="terminal_fence_rejected",
+                        )
+                    else:
+                        self._record_claim_state(
+                            worker_id=worker_id,
+                            delivery=delivery,
+                            claims=claims,
+                            event_type="runtime.delivery.claim.released",
+                            state=claim_state,
+                        )
+            finally:
+                with self._condition:
+                    self._release_reservation_locked(worker_id, delivery)
 
-        mailbox.ack(delivery.delivery_id)
-        self._append(
-            delivery.event,
-            "runtime.agent.step.completed",
-            {"agent_id": worker_id, "delivery_id": delivery.delivery_id},
-        )
-        self._append(
-            delivery.event,
-            "runtime.agent.idle",
-            {"agent_id": worker_id},
-        )
-        return True
-
-    def _handle_unexpected_failure(
+    def _finish_claims_with_ack(
         self,
         *,
         worker_id: str,
         mailbox: DurableMailbox,
         delivery: Delivery,
-        error: Exception,
+        claims: dict[str, int],
+        allow_cancelled_run: bool = False,
+    ) -> bool:
+        with self._condition:
+            self._finalizing.add((worker_id, delivery.delivery_id))
+        finished = self.store.finish_work_claims(
+            claims=claims,
+            owner_id=self._owner_id,
+            state="completed",
+            final_event=mailbox.ack_event(delivery.delivery_id),
+            allow_cancelled_run=allow_cancelled_run,
+        )
+        if not finished:
+            self._record_claim_lost(
+                worker_id=worker_id,
+                delivery=delivery,
+                claims=claims,
+                reason="ack_fence_rejected",
+            )
+        else:
+            self._record_claim_state(
+                worker_id=worker_id,
+                delivery=delivery,
+                claims=claims,
+                event_type="runtime.delivery.claim.released",
+                state="completed",
+            )
+        return finished
+
+    def _record_claim_state(
+        self,
+        *,
+        worker_id: str,
+        delivery: Delivery,
+        claims: dict[str, int],
+        event_type: str,
+        state: str,
+        expires_at: str | None = None,
     ) -> None:
+        token_key = ":".join(f"{key}={token}" for key, token in sorted(claims.items()))
+        self._append(
+            delivery.event,
+            event_type,
+            {
+                "agent_id": worker_id,
+                "delivery_id": delivery.delivery_id,
+                "claim_tokens": claims,
+                "state": state,
+                "expires_at": expires_at,
+            },
+            key=f"claim-state:{event_type}:{delivery.delivery_id}:{token_key}:{expires_at}",
+        )
+
+    def _record_claim_lost(
+        self,
+        *,
+        worker_id: str,
+        delivery: Delivery,
+        claims: dict[str, int],
+        reason: str,
+    ) -> None:
+        token_key = ":".join(f"{key}={token}" for key, token in sorted(claims.items()))
+        self._append(
+            delivery.event,
+            "runtime.delivery.claim.lost",
+            {
+                "agent_id": worker_id,
+                "delivery_id": delivery.delivery_id,
+                "claim_tokens": claims,
+                "reason": reason,
+            },
+            key=f"claim-lost:{worker_id}:{delivery.delivery_id}:{reason}:{token_key}",
+        )
+
+    def _reserve_next_locked(
+        self,
+    ) -> (
+        tuple[
+            str,
+            DurableMailbox,
+            Handler,
+            Delivery,
+            dict[str, int],
+            DispatchContext,
+        ]
+        | None
+    ):
+        if not self._accepting or len(self._in_flight) >= self._max_workers:
+            return None
+        worker_ids = list(self._workers)
+        if not worker_ids:
+            return None
+        for offset in range(len(worker_ids)):
+            index = (self._selection_cursor + offset) % len(worker_ids)
+            worker_id = worker_ids[index]
+            mailbox, handler, max_concurrency = self._workers[worker_id]
+            if self._worker_in_flight_locked(worker_id) >= max_concurrency:
+                continue
+            for delivery in mailbox.pending():
+                if delivery.event.run_id in self._cancelled_runs:
+                    continue
+                reservation_key = (worker_id, delivery.delivery_id)
+                if reservation_key in self._in_flight:
+                    continue
+                claims = None
+                claim_deadline = None
+                for worker_slot in range(max_concurrency):
+                    claimed_at = datetime.now(timezone.utc)
+                    claims = self.store.claim_work(
+                        claim_keys=self._claim_keys(
+                            worker_id,
+                            mailbox,
+                            delivery,
+                            worker_slot=worker_slot,
+                        ),
+                        owner_id=self._owner_id,
+                        ttl_seconds=self._work_claim_seconds,
+                        now=claimed_at,
+                    )
+                    if claims is not None:
+                        claim_deadline = claimed_at + timedelta(
+                            seconds=self._work_claim_seconds
+                        )
+                        break
+                if claims is None:
+                    continue
+                dispatch_context = DispatchContext.create(
+                    worker_id=worker_id,
+                    delivery_id=delivery.delivery_id,
+                    claim_owner_id=self._owner_id,
+                    claim_tokens=claims,
+                )
+                self._in_flight[reservation_key] = (
+                    delivery,
+                    claims,
+                    dispatch_context,
+                )
+                assert claim_deadline is not None
+                self._claim_deadlines[reservation_key] = claim_deadline
+                self._ensure_renewer_locked()
+                self._selection_cursor = (index + 1) % len(worker_ids)
+                return (
+                    worker_id,
+                    mailbox,
+                    handler,
+                    delivery,
+                    claims,
+                    dispatch_context,
+                )
+        return None
+
+    def _ensure_renewer_locked(self) -> None:
+        if self._renewer_thread is not None and self._renewer_thread.is_alive():
+            return
+        self._renewer_stop.clear()
+        self._renewer_thread = threading.Thread(
+            target=self._renew_claims_loop,
+            name="crazy-claim-renewer",
+            daemon=False,
+        )
+        self._renewer_thread.start()
+
+    def _stop_renewer(self) -> None:
+        self._renewer_stop.set()
+        self._renewer_wake.set()
+        thread = self._renewer_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self._work_claim_seconds / 3 + 0.5))
+            if thread.is_alive():
+                raise RuntimeError("work claim renewer did not stop")
+        self._renewer_thread = None
+
+    def _renew_claims_loop(self) -> None:
+        interval = max(0.05, self._work_claim_seconds / 3)
+        while True:
+            self._renewer_wake.wait(interval)
+            self._renewer_wake.clear()
+            if self._renewer_stop.is_set():
+                return
+            with self._condition:
+                if not self._in_flight:
+                    self._renewer_thread = None
+                    return
+                reservations = [
+                    (
+                        worker_id,
+                        delivery,
+                        claims,
+                        dispatch_context,
+                        self._claim_deadlines.get((worker_id, delivery_id)),
+                    )
+                    for (worker_id, delivery_id), (
+                        delivery,
+                        claims,
+                        dispatch_context,
+                    ) in self._in_flight.items()
+                    if (worker_id, delivery_id) not in self._finalizing
+                    and (worker_id, delivery_id) not in self._lost_reservations
+                ]
+            for (
+                worker_id,
+                delivery,
+                claims,
+                dispatch_context,
+                claim_deadline,
+            ) in reservations:
+                renewed_at = datetime.now(timezone.utc)
+                try:
+                    renewed = self.store.renew_work_claims(
+                        claims=claims,
+                        owner_id=self._owner_id,
+                        ttl_seconds=self._work_claim_seconds,
+                        now=renewed_at,
+                    )
+                except Exception as exc:
+                    reservation_key = (worker_id, delivery.delivery_id)
+                    with self._condition:
+                        if reservation_key not in self._in_flight:
+                            continue
+                        cancel_before_expiry = (
+                            claim_deadline is None
+                            or renewed_at + timedelta(seconds=interval)
+                            >= claim_deadline
+                        )
+                        if cancel_before_expiry:
+                            self._lost_reservations.add(reservation_key)
+                            dispatch_context.cancellation.cancel(
+                                "work claim renewal could not be confirmed"
+                            )
+                    self._record_renewal_failure(
+                        worker_id=worker_id,
+                        delivery=delivery,
+                        error=exc,
+                        will_retry=not cancel_before_expiry,
+                    )
+                    continue
+                if renewed:
+                    renewed_deadline = renewed_at + timedelta(
+                        seconds=self._work_claim_seconds
+                    )
+                    with self._condition:
+                        self._claim_deadlines[(worker_id, delivery.delivery_id)] = (
+                            renewed_deadline
+                        )
+                    try:
+                        self._record_claim_state(
+                            worker_id=worker_id,
+                            delivery=delivery,
+                            claims=claims,
+                            event_type="runtime.delivery.claim.renewed",
+                            state="active",
+                            expires_at=renewed_deadline.isoformat(),
+                        )
+                    except Exception as exc:
+                        self._record_renewal_failure(
+                            worker_id=worker_id,
+                            delivery=delivery,
+                            error=exc,
+                            will_retry=True,
+                        )
+                    continue
+                reservation_key = (worker_id, delivery.delivery_id)
+                with self._condition:
+                    if (
+                        reservation_key not in self._in_flight
+                        or reservation_key in self._finalizing
+                        or reservation_key in self._lost_reservations
+                    ):
+                        continue
+                    self._lost_reservations.add(reservation_key)
+                    dispatch_context.cancellation.cancel(
+                        "work claim renewal was rejected"
+                    )
+                try:
+                    self._record_claim_lost(
+                        worker_id=worker_id,
+                        delivery=delivery,
+                        claims=claims,
+                        reason="renewal_fence_rejected",
+                    )
+                except Exception:
+                    pass
+
+    def _record_renewal_failure(
+        self,
+        *,
+        worker_id: str,
+        delivery: Delivery,
+        error: Exception,
+        will_retry: bool,
+    ) -> None:
+        try:
+            self._append(
+                delivery.event,
+                "runtime.delivery.claim.renewal.failed",
+                {
+                    "agent_id": worker_id,
+                    "delivery_id": delivery.delivery_id,
+                    "reason": f"{type(error).__name__}: {error}",
+                    "will_retry": will_retry,
+                },
+                key=(
+                    f"claim-renewal-failed:{worker_id}:{delivery.delivery_id}:"
+                    f"{type(error).__name__}:{will_retry}"
+                ),
+            )
+        except Exception:
+            pass
+
+    def _claim_keys(
+        self,
+        worker_id: str,
+        mailbox: DurableMailbox,
+        delivery: Delivery,
+        *,
+        worker_slot: int | None = None,
+    ) -> tuple[str, ...]:
+        payload = delivery.event.payload
+        # Supervisor patches one shared plan, so every coordinator delivery for
+        # the same Run must contend on one durable single-flight claim.
+        agent_run_id = (
+            f"supervisor:{delivery.event.run_id}"
+            if worker_id == "coordinator"
+            else payload.get("agent_run_id")
+        )
+        if not agent_run_id and delivery.event.type == "a2a.peer.requested":
+            correlation_id = payload.get("correlation_id", delivery.event.id)
+            agent_run_id = f"peer:{delivery.event.run_id}:{correlation_id}"
+        if not agent_run_id:
+            assignment_id = payload.get("assignment_id")
+            agent_run_id = (
+                f"assignment:{delivery.event.run_id}:{assignment_id}"
+                if assignment_id
+                else f"task:{delivery.event.run_id}:{delivery.event.task_id}:{worker_id}"
+            )
+        keys = (
+            f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}",
+            f"agent-run:{agent_run_id}",
+        )
+        if worker_slot is None:
+            return keys
+        return (*keys, f"worker-slot:{worker_id}:{worker_slot}")
+
+    def _worker_in_flight_locked(self, worker_id: str) -> int:
+        return sum(key[0] == worker_id for key in self._in_flight)
+
+    def _pending_count_locked(self) -> int:
+        claimed_deliveries = self._active_delivery_claim_keys()
+        return sum(
+            (worker_id, delivery.delivery_id) not in self._in_flight
+            and f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
+            not in claimed_deliveries
+            for worker_id, (mailbox, _, _) in self._workers.items()
+            for delivery in mailbox.pending()
+        )
+
+    def _active_delivery_claim_keys(self) -> set[str]:
+        current = datetime.now(timezone.utc)
+        return {
+            str(claim["claim_key"])
+            for claim in self.store.list_work_claims(state="active")
+            if str(claim["claim_key"]).startswith("delivery:")
+            and datetime.fromisoformat(str(claim["expires_at"])) > current
+        }
+
+    def _backpressure_locked(
+        self,
+    ) -> tuple[Event, str, dict[str, int]] | None:
+        queued = self._pending_count_locked()
+        if queued == 0:
+            self._backpressure_signature = None
+            return None
+        active_keys = tuple(
+            sorted(f"{worker}:{delivery}" for worker, delivery in self._in_flight)
+        )
+        signature: tuple[object, ...] = (queued, active_keys)
+        if signature == self._backpressure_signature:
+            return None
+        identity = next(
+            delivery.event
+            for worker_id, (mailbox, _, _) in self._workers.items()
+            for delivery in mailbox.pending()
+            if (worker_id, delivery.delivery_id) not in self._in_flight
+        )
+        self._backpressure_signature = signature
+        key = f"backpressure:{identity.id}:{':'.join(active_keys) or 'claim-conflict'}"
+        return (
+            identity,
+            key,
+            {
+                "active": len(self._in_flight),
+                "capacity": self._max_workers,
+                "queued": queued,
+            },
+        )
+
+    def _release_reservation_locked(self, worker_id: str, delivery: Delivery) -> None:
+        reservation_key = (worker_id, delivery.delivery_id)
+        self._in_flight.pop(reservation_key, None)
+        self._claim_deadlines.pop(reservation_key, None)
+        self._finalizing.discard(reservation_key)
+        self._lost_reservations.discard(reservation_key)
+        self._completed_steps += 1
+        self._backpressure_signature = None
+        self._wake_generation += 1
+        self._renewer_wake.set()
+        self._condition.notify_all()
+
+    def _handle_unexpected_failure(
+        self,
+        *,
+        worker_id: str,
+        delivery: Delivery,
+        error: Exception,
+    ) -> bool:
         attempts = 1 + sum(
             event.type == "runtime.agent.crashed"
             and event.payload.get("delivery_id") == delivery.delivery_id
@@ -206,7 +967,7 @@ class ResidentScheduler:
             key=f"unexpected-crash:{delivery.delivery_id}:{attempts}",
         )
         if attempts < self.MAX_DELIVERY_FAILURES:
-            return
+            return False
         dead_letter = self._append(
             delivery.event,
             "mailbox.delivery.dead_lettered",
@@ -233,7 +994,7 @@ class ResidentScheduler:
             causation_id=crashed.id,
         )
         self._fail_running_run_for_dead_letter(delivery, dead_letter)
-        mailbox.ack(delivery.delivery_id)
+        return True
 
     def _dead_letter(self, delivery_id: str) -> Event | None:
         return next(
@@ -255,9 +1016,7 @@ class ResidentScheduler:
         root_task_id = str(run.get("task_id") or delivery.event.task_id)
         snapshot = self.store.snapshot(run_id=delivery.event.run_id)
         active_leases = [
-            lease
-            for lease in snapshot["leases"]
-            if lease.get("status") == "active"
+            lease for lease in snapshot["leases"] if lease.get("status") == "active"
         ]
         for lease in active_leases:
             assignment_id = str(lease["assignment_id"])
@@ -296,8 +1055,7 @@ class ResidentScheduler:
                     "dead_letter_event_id": dead_letter.id,
                 },
                 key=(
-                    f"dead-letter-lease-released:"
-                    f"{delivery.delivery_id}:{assignment_id}"
+                    f"dead-letter-lease-released:{delivery.delivery_id}:{assignment_id}"
                 ),
                 causation_id=dead_letter.id,
                 task_id=root_task_id,
@@ -329,7 +1087,9 @@ class ResidentScheduler:
         return self.store.append(
             Event(
                 id=(
-                    str(uuid5(NAMESPACE_URL, f"crazy:scheduler:{identity.run_id}:{key}"))
+                    str(
+                        uuid5(NAMESPACE_URL, f"crazy:scheduler:{identity.run_id}:{key}")
+                    )
                     if key is not None
                     else str(uuid4())
                 ),
@@ -347,6 +1107,7 @@ class ResidentRuntime:
     """Cohesive resident runtime used by the API, Control Room, and learning tests."""
 
     SCHEDULER_RECOVERY_DELAY_SECONDS = 0.05
+    EXTERNAL_WAKE_FALLBACK_SECONDS = 1.0
     SCHEDULER_FAILURE_BUFFER_LIMIT = 100
 
     AGENTS = (
@@ -457,11 +1218,13 @@ class ResidentRuntime:
             maxlen=self.SCHEDULER_FAILURE_BUFFER_LIMIT
         )
         self._route_cursor = 0
+        self._route_lock = threading.RLock()
         self._reconcile_routes()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        self.scheduler.resume()
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._serve, name="crazy-resident-runtime", daemon=True
@@ -469,10 +1232,16 @@ class ResidentRuntime:
         self._thread.start()
 
     def stop(self) -> None:
+        self.scheduler.pause()
         self._stop.set()
         self.scheduler.signal()
         if self._thread is not None:
             self._thread.join(timeout=3)
+            if self._thread.is_alive():
+                raise RuntimeError(
+                    "resident scheduler thread did not stop within 3 seconds"
+                )
+        self.scheduler.shutdown(wait=True)
         self._thread = None
 
     def _serve(self) -> None:
@@ -482,14 +1251,16 @@ class ResidentRuntime:
                 self._flush_scheduler_cycle_failures()
                 stage = "route_reconciliation"
                 self._reconcile_routes()
+                stage = "cancellation_reconciliation"
+                self._reconcile_cancellations()
                 stage = "lease_expiry"
                 if self.expire_due_leases():
                     continue
                 stage = "delivery_selection"
-                if self.scheduler.run_once():
+                if self.scheduler.dispatch_available():
                     continue
                 stage = "deadline_wait"
-                self.scheduler.wait(self._seconds_until_next_lease())
+                self.scheduler.wait(self._seconds_until_next_wake())
             except InjectedKernelCrash:
                 # Chaos Lab 依赖该异常模拟进程中断；不能降级成普通可恢复错误。
                 raise
@@ -497,9 +1268,7 @@ class ResidentRuntime:
                 self._record_scheduler_cycle_failure(stage=stage, error=exc)
                 self._stop.wait(self.SCHEDULER_RECOVERY_DELAY_SECONDS)
 
-    def _record_scheduler_cycle_failure(
-        self, *, stage: str, error: Exception
-    ) -> Event:
+    def _record_scheduler_cycle_failure(self, *, stage: str, error: Exception) -> Event:
         event = Event(
             run_id="control-plane",
             task_id="resident-scheduler",
@@ -539,6 +1308,161 @@ class ResidentRuntime:
             )
         return self._submit_team_task(request)
 
+    def cancel_run(self, run_id: str, *, reason: str = "operator_requested") -> dict:
+        run = self.store.projection("run", run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if run.get("status") in {"succeeded", "failed", "cancelled"}:
+            return {
+                "run_id": run_id,
+                "status": str(run["status"]),
+                "active_cancelled": 0,
+                "queued_cancelled": 0,
+            }
+        identity = next(
+            event
+            for event in self.store.read_all(run_id=run_id)
+            if event.type == "run.created"
+        )
+        requested = self._append_deterministic(
+            identity,
+            f"run-cancel-requested:{run_id}",
+            "run.cancel.requested",
+            {"reason": reason},
+            source="runtime.cancel",
+        )
+        active_cancelled = self.scheduler.cancel_run(run_id, reason=reason)
+        self._cancel_assignments_and_leases(requested, reason=reason)
+        queued_cancelled = self._cancel_queued_deliveries(run_id, reason=reason)
+        self._finalize_cancelled_run(requested, reason=reason)
+        status = str(self.store.projection("run", run_id)["status"])
+        return {
+            "run_id": run_id,
+            "status": status,
+            "active_cancelled": active_cancelled,
+            "queued_cancelled": queued_cancelled,
+        }
+
+    def _reconcile_cancellations(self) -> int:
+        changed = 0
+        for run in self.store.snapshot()["runs"]:
+            status = run.get("status")
+            if status not in {"cancelling", "cancelled"}:
+                continue
+            run_id = str(run["run_id"])
+            requested = next(
+                (
+                    event
+                    for event in reversed(self.store.read_all(run_id=run_id))
+                    if event.type == "run.cancel.requested"
+                ),
+                None,
+            )
+            reason = (
+                str(requested.payload.get("reason", "operator_requested"))
+                if requested is not None
+                else "operator_requested"
+            )
+            # Rebuild the process-local dispatch denylist from durable Run state.
+            # This also drains messages that arrived after run.cancelled was persisted.
+            self.scheduler.cancel_run(run_id, reason=reason)
+            identity = requested or next(
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            )
+            self._cancel_assignments_and_leases(identity, reason=reason)
+            changed += self._cancel_queued_deliveries(run_id, reason=reason)
+            if status == "cancelling" and requested is not None:
+                changed += int(self._finalize_cancelled_run(requested, reason=reason))
+        return changed
+
+    def _cancel_assignments_and_leases(self, identity: Event, *, reason: str) -> None:
+        snapshot = self.store.snapshot(run_id=identity.run_id)
+        for assignment in snapshot["assignments"]:
+            if assignment.get("status") in {
+                "succeeded",
+                "completed",
+                "failed",
+                "expired",
+                "cancelled",
+            }:
+                continue
+            assignment_id = str(assignment["assignment_id"])
+            self._append_deterministic(
+                identity,
+                f"assignment-cancelled:{assignment_id}",
+                "assignment.cancelled",
+                {
+                    "assignment_id": assignment_id,
+                    "agent_id": assignment.get("agent_id"),
+                    "stage_id": assignment.get("stage_id"),
+                    "reason": reason,
+                },
+                source="runtime.cancel",
+            )
+        for lease in snapshot["leases"]:
+            if lease.get("status") != "active":
+                continue
+            assignment_id = str(lease["assignment_id"])
+            self._append_deterministic(
+                identity,
+                f"cancel-lease-released:{assignment_id}",
+                "assignment.lease.released",
+                {
+                    "lease_id": lease["lease_id"],
+                    "assignment_id": assignment_id,
+                    "agent_id": lease.get("agent_id"),
+                    "stage_id": lease.get("stage_id"),
+                    "reason": "run_cancelled",
+                },
+                source="runtime.cancel",
+            )
+
+    def _cancel_queued_deliveries(self, run_id: str, *, reason: str) -> int:
+        cancelled = 0
+        for worker_id, mailbox in self.mailboxes.items():
+            for delivery in mailbox.pending():
+                if delivery.event.run_id != run_id:
+                    continue
+                try:
+                    mailbox.ack(delivery.delivery_id)
+                except UnfencedAckError:
+                    continue
+                self._append_deterministic(
+                    delivery.event,
+                    f"queued-delivery-cancelled:{worker_id}:{delivery.delivery_id}",
+                    "runtime.delivery.cancelled",
+                    {
+                        "agent_id": worker_id,
+                        "delivery_id": delivery.delivery_id,
+                        "reason": reason,
+                        "mode": "queued",
+                    },
+                    source="runtime.cancel",
+                )
+                cancelled += 1
+        return cancelled
+
+    def _finalize_cancelled_run(self, identity: Event, *, reason: str) -> bool:
+        run_id = identity.run_id
+        if self.scheduler.in_flight_for_run(run_id):
+            return False
+        if any(
+            delivery.event.run_id == run_id
+            for mailbox in self.mailboxes.values()
+            for delivery in mailbox.pending()
+        ):
+            return False
+        self._append_deterministic(
+            identity,
+            f"run-cancelled:{run_id}",
+            "run.cancelled",
+            {"reason": reason},
+            source="runtime.cancel",
+        )
+        return True
+
     def _submit_team_task(self, request: TaskRequest) -> RunCreated:
         if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
             raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
@@ -558,7 +1482,7 @@ class ResidentRuntime:
                     "task_pack": self.team_pack.task_pack_id,
                     "team_contract": self.team_contract.model_dump(mode="json"),
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.5.0-dev",
+                    "behavior_version": "v0.6.0-dev",
                 },
             )
         )
@@ -630,18 +1554,42 @@ class ResidentRuntime:
         return RunCreated(run_id=run_id, task_id=task_id)
 
     def run_until_idle(self, *, max_steps: int = 100) -> int:
-        steps = 0
-        while steps < max_steps:
+        started_at = self.scheduler.completed_steps
+        waits_without_progress = 0
+        while self.scheduler.completed_steps - started_at < max_steps:
             self._reconcile_routes()
+            self._reconcile_cancellations()
             if self.scheduler.run_once():
-                steps += 1
+                waits_without_progress = 0
                 continue
             expired = self.expire_due_leases()
             if expired:
-                steps += expired
+                waits_without_progress = 0
+                continue
+            if self.scheduler.in_flight_count:
+                before = self.scheduler.completed_steps
+                self.scheduler.wait_for_progress(completed_steps=before, timeout=0.05)
+                waits_without_progress = (
+                    waits_without_progress + 1
+                    if self.scheduler.completed_steps == before
+                    else 0
+                )
+                continue
+            if self._reconcile_routes():
+                waits_without_progress = 0
+                continue
+            if self.scheduler.pending_count:
+                # Another Runtime may hold the durable Claim. Wait without stealing it.
+                waits_without_progress += 1
+                if waits_without_progress >= max_steps:
+                    break
+                self.scheduler.wait(0.05)
                 continue
             break
-        if steps == max_steps and self.scheduler.has_pending():
+        steps = self.scheduler.completed_steps - started_at
+        if (
+            steps >= max_steps or waits_without_progress >= max_steps
+        ) and self.scheduler.has_pending():
             raise RuntimeError(
                 f"resident runtime did not become idle after {max_steps} steps"
             )
@@ -721,16 +1669,23 @@ class ResidentRuntime:
             expired_count += 1
         return expired_count
 
-    def _seconds_until_next_lease(self, *, now: datetime | None = None) -> float | None:
+    def _seconds_until_next_wake(self, *, now: datetime | None = None) -> float:
         current = now or datetime.now(timezone.utc)
         deadlines = [
             datetime.fromisoformat(str(item["expires_at"]))
             for item in self.store.snapshot()["leases"]
             if item.get("status") == "active"
         ]
+        deadlines.extend(
+            datetime.fromisoformat(str(item["expires_at"]))
+            for item in self.store.list_work_claims(state="active")
+        )
         if not deadlines:
-            return None
-        return max(0.0, (min(deadlines) - current).total_seconds())
+            return self.EXTERNAL_WAKE_FALLBACK_SECONDS
+        deadline_delay = (min(deadlines) - current).total_seconds()
+        if deadline_delay <= 0:
+            return self.EXTERNAL_WAKE_FALLBACK_SECONDS
+        return min(self.EXTERNAL_WAKE_FALLBACK_SECONDS, deadline_delay)
 
     def arm_fault(self, point: str) -> None:
         self.faults.arm(point)
@@ -742,9 +1697,52 @@ class ResidentRuntime:
             (item for item in runs if run_id is None or item["run_id"] == run_id), None
         )
         latest = self.store.last(run_id=run_id) if run_id else self.store.last()
+        queued_deliveries: list[dict[str, object]] = []
+        visible_claim_keys: set[str] = set()
+        all_work_claims = self.store.list_work_claims()
+        claim_by_key = {str(claim["claim_key"]): claim for claim in all_work_claims}
+        for worker_id, mailbox in self.mailboxes.items():
+            for position, delivery in enumerate(mailbox.pending(), start=1):
+                if run_id is not None and delivery.event.run_id != run_id:
+                    continue
+                delivery_claim_key = (
+                    f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
+                )
+                claim = claim_by_key.get(delivery_claim_key)
+                visible_claim_keys.update(
+                    self.scheduler.claim_keys_for(worker_id, mailbox, delivery)
+                )
+                if claim is not None:
+                    visible_claim_keys.update(
+                        str(bundle_claim["claim_key"])
+                        for bundle_claim in all_work_claims
+                        if bundle_claim["owner_id"] == claim["owner_id"]
+                        and bundle_claim["claimed_at"] == claim["claimed_at"]
+                    )
+                queued_deliveries.append(
+                    {
+                        "delivery_id": delivery.delivery_id,
+                        "worker_id": worker_id,
+                        "run_id": delivery.event.run_id,
+                        "task_id": delivery.event.task_id,
+                        "event_type": delivery.event.type,
+                        "assignment_id": delivery.event.payload.get("assignment_id"),
+                        "stage_id": delivery.event.payload.get("stage_id"),
+                        "position": position,
+                        "claim_state": claim.get("state") if claim else None,
+                        "fencing_token": claim.get("fencing_token") if claim else None,
+                    }
+                )
+        work_claims = [
+            claim
+            for claim in all_work_claims
+            if run_id is None or claim["claim_key"] in visible_claim_keys
+        ]
         return {
             "run": run,
             **snapshot,
+            "queued_deliveries": queued_deliveries,
+            "work_claims": work_claims,
             "runtime": {
                 "status": "running"
                 if self._thread is not None and self._thread.is_alive()
@@ -752,6 +1750,8 @@ class ResidentRuntime:
                 "latest_event_id": latest.id if latest else None,
                 "deepseek_configured": bool(os.getenv("DEEPSEEK_API_KEY")),
                 "fact_source": str(self.store.path),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "scheduler": self.scheduler.snapshot(),
             },
         }
 
@@ -1008,7 +2008,11 @@ class ResidentRuntime:
             trigger=event,
             kind=CommandKind.PLAN_PATCH,
             payload=patch.command_payload(),
-            key=f"{event.run_id}:coordinator:plan:{patch.revision}",
+            # The same delivery reuses its persisted response after a crash,
+            # while a newer fact may retry the same rejected plan revision.
+            key=(
+                f"{event.run_id}:coordinator:plan:{patch.revision}:trigger:{event.id}"
+            ),
         )
         if not decision.accepted:
             return
@@ -1381,16 +2385,18 @@ class ResidentRuntime:
         return decision
 
     def _route_decision(self, decision: KernelDecision) -> None:
-        for event in self.kernel.events_for(decision):
-            self._route_event(event)
+        with self._route_lock:
+            for event in self.kernel.events_for(decision):
+                self._route_event(event)
 
     def _reconcile_routes(self) -> int:
-        routed = 0
-        for record in self.store.read_records(after=self._route_cursor):
-            if self._route_event(record.event):
-                routed += 1
-            self._route_cursor = record.cursor
-        return routed
+        with self._route_lock:
+            routed = 0
+            for record in self.store.read_records(after=self._route_cursor):
+                if self._route_event(record.event):
+                    routed += 1
+                self._route_cursor = record.cursor
+            return routed
 
     def _route_event(self, event: Event) -> bool:
         receiver: str | None = None

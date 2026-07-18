@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from crazy_harness.core.agents import AgentLoop, AssignmentContract, CompletionGate, NudgeBudget
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.capabilities import (
@@ -15,6 +17,7 @@ from crazy_harness.core.tools import ToolRegistry, ToolResult, ToolSpec
 from crazy_harness.core.tools.policy import PolicyContext
 
 
+@pytest.mark.smoke
 def test_agent_loop_calls_tool_and_records_result(tmp_path):
     event_log = EventLog(tmp_path / "events.jsonl")
     artifact_store = ArtifactStore(tmp_path / "artifacts")
@@ -93,6 +96,7 @@ def test_agent_loops_are_isolated_by_assignment_task_id(tmp_path):
     assert any(event.type == "tool.completed" for event in event_log.read_all(task_id="builder-a2"))
 
 
+@pytest.mark.smoke
 def test_completion_gate_turns_premature_stop_into_bounded_nudge(tmp_path):
     event_log = EventLog(tmp_path / "events.jsonl")
     event_log.append(Event(run_id="r1", task_id="t1", type="assignment.created", source="coordinator"))

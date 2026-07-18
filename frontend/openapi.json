@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.5.0-dev"
+    "version": "0.6.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -83,6 +83,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DrainResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/cancel": {
+      "post": {
+        "summary": "Cancel Run",
+        "operationId": "cancel_run_api_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
                 }
               }
             }
@@ -430,6 +469,11 @@
             "title": "Mailbox Pending",
             "default": 0
           },
+          "in_flight": {
+            "type": "integer",
+            "title": "In Flight",
+            "default": 0
+          },
           "active_run_id": {
             "anyOf": [
               {
@@ -507,6 +551,36 @@
           "status"
         ],
         "title": "AssignmentView"
+      },
+      "CancelResult": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "active_cancelled": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Active Cancelled"
+          },
+          "queued_cancelled": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Queued Cancelled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "status",
+          "active_cancelled",
+          "queued_cancelled"
+        ],
+        "title": "CancelResult"
       },
       "CapabilityManifestView": {
         "properties": {
@@ -1229,6 +1303,90 @@
         ],
         "title": "PeerProbeRequest"
       },
+      "QueuedDeliveryView": {
+        "properties": {
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          },
+          "worker_id": {
+            "type": "string",
+            "title": "Worker Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "assignment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Id"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Position"
+          },
+          "claim_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim State"
+          },
+          "fencing_token": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fencing Token"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "delivery_id",
+          "worker_id",
+          "run_id",
+          "task_id",
+          "event_type",
+          "position"
+        ],
+        "title": "QueuedDeliveryView"
+      },
       "RebuildResult": {
         "properties": {
           "status": {
@@ -1359,6 +1517,15 @@
           "fact_source": {
             "type": "string",
             "title": "Fact Source"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          },
+          "scheduler": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Scheduler"
           }
         },
         "additionalProperties": true,
@@ -1366,7 +1533,9 @@
         "required": [
           "status",
           "deepseek_configured",
-          "fact_source"
+          "fact_source",
+          "generated_at",
+          "scheduler"
         ],
         "title": "RuntimeView"
       },
@@ -1438,6 +1607,20 @@
             "type": "array",
             "title": "Dream Jobs"
           },
+          "queued_deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/QueuedDeliveryView"
+            },
+            "type": "array",
+            "title": "Queued Deliveries"
+          },
+          "work_claims": {
+            "items": {
+              "$ref": "#/components/schemas/WorkClaimView"
+            },
+            "type": "array",
+            "title": "Work Claims"
+          },
           "runtime": {
             "$ref": "#/components/schemas/RuntimeView"
           }
@@ -1453,6 +1636,8 @@
           "memories",
           "evolutions",
           "dream_jobs",
+          "queued_deliveries",
+          "work_claims",
           "runtime"
         ],
         "title": "SnapshotView"
@@ -1553,6 +1738,51 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkClaimView": {
+        "properties": {
+          "claim_key": {
+            "type": "string",
+            "title": "Claim Key"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "fencing_token": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Fencing Token"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "claimed_at": {
+            "type": "string",
+            "title": "Claimed At"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "claim_key",
+          "owner_id",
+          "fencing_token",
+          "state",
+          "claimed_at",
+          "expires_at",
+          "updated_at"
+        ],
+        "title": "WorkClaimView"
       }
     }
   }

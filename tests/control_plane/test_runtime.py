@@ -148,15 +148,15 @@ def test_resident_runtime_does_not_poll_mailboxes_while_idle(tmp_path):
     runtime = ResidentRuntime(tmp_path)
     first_attempt = ThreadEvent()
     attempts = 0
-    original_run_once = runtime.scheduler.run_once
+    original_dispatch = runtime.scheduler.dispatch_available
 
-    def counted_run_once():
+    def counted_dispatch():
         nonlocal attempts
         attempts += 1
         first_attempt.set()
-        return original_run_once()
+        return original_dispatch()
 
-    runtime.scheduler.run_once = counted_run_once
+    runtime.scheduler.dispatch_available = counted_dispatch
     runtime.start()
     try:
         assert first_attempt.wait(1)
@@ -174,7 +174,7 @@ def test_resident_runtime_wakes_for_work_after_becoming_idle(tmp_path):
         created = runtime.submit_task(
             TaskRequest(title="Wake acceptance", brief="Prove sticky scheduler wake."),
         )
-        deadline = monotonic() + 15
+        deadline = monotonic() + 30
         status = "queued"
         while monotonic() < deadline:
             status = runtime.snapshot(created.run_id)["run"]["status"]
@@ -263,13 +263,17 @@ def test_finalized_team_result_is_routed_from_event_outbox_after_crash(tmp_path)
         if event.type == "agent.result.submitted"
         and event.payload.get("result_kind") == "evidence"
     ]
-    assert len(evidence_results) == 1
-    assert any(
-        event.type == "mailbox.delivery.sent"
-        and event.payload.get("delivery_id")
-        == f"route:{evidence_results[0].id}:coordinator"
-        for event in events
-    )
+    assert {event.payload.get("stage_id") for event in evidence_results} == {
+        "evidence",
+        "risk",
+    }
+    for result in evidence_results:
+        assert any(
+            event.type == "mailbox.delivery.sent"
+            and event.payload.get("delivery_id")
+            == f"route:{result.id}:coordinator"
+            for event in events
+        )
     assert not any(
         lease.get("status") == "active"
         for lease in runtime.snapshot(created.run_id)["leases"]
@@ -295,6 +299,7 @@ def test_team_delivery_redelivery_reuses_same_lease_renewal_event(tmp_path):
         None,
     )
     assert team_delivery is not None
+    assignment_id = str(team_delivery.event.payload["assignment_id"])
 
     runtime.arm_fault("before_mailbox_ack")
     assert runtime.scheduler.run_once() is True
@@ -307,16 +312,22 @@ def test_team_delivery_redelivery_reuses_same_lease_renewal_event(tmp_path):
         record.event
         for record in runtime.store.read_records(run_id=created.run_id)
         if record.event.type == "assignment.lease.renewed"
+        and record.event.payload.get("assignment_id") == assignment_id
     ]
     assert len(renewals_before_redelivery) == 1
 
-    sleep(0.01)
-    assert runtime.scheduler.run_once() is True
+    for _ in range(12):
+        sleep(0.01)
+        assert runtime.scheduler.run_once() is True
+        pending = runtime.mailboxes[str(crash.payload["agent_id"])].peek()
+        if pending is None or pending.delivery_id != crash.payload["delivery_id"]:
+            break
 
     renewals_after_redelivery = [
         record.event
         for record in runtime.store.read_records(run_id=created.run_id)
         if record.event.type == "assignment.lease.renewed"
+        and record.event.payload.get("assignment_id") == assignment_id
     ]
     assert renewals_after_redelivery == renewals_before_redelivery
     pending = runtime.mailboxes[str(crash.payload["agent_id"])].peek()

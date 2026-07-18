@@ -4,6 +4,7 @@ export type Snapshot = components["schemas"]["SnapshotView"];
 export type EventPage = components["schemas"]["EventPage"];
 export type EventRecord = components["schemas"]["EventRecord"];
 export type RunCreated = components["schemas"]["RunCreated"];
+export type CancelResult = components["schemas"]["CancelResult"];
 export type TaskRequest = components["schemas"]["TaskRequest"];
 export type KernelDecision = components["schemas"]["KernelDecision"];
 export type FaultPoint =
@@ -30,6 +31,8 @@ export const api = {
     request<RunCreated>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   drainRun: (runId: string) =>
     request<{ run_id: string; steps: number }>(`/api/runs/${runId}/drain`, { method: "POST" }),
+  cancelRun: (runId: string) =>
+    request<CancelResult>(`/api/runs/${runId}/cancel`, { method: "POST" }),
   snapshot: (runId?: string) =>
     request<Snapshot>(`/api/snapshot${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
   events: (runId: string, after = 0) =>

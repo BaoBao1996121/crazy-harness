@@ -16,6 +16,7 @@ from crazy_harness.control_plane.runtime import ResidentRuntime, TaskRequest
 from crazy_harness.control_plane.runtime import RunCreated
 from crazy_harness.control_plane.kernel import KernelDecision
 from crazy_harness.control_plane.views import (
+    CancelResult,
     DrainResult,
     EventPage,
     FaultResult,
@@ -24,7 +25,7 @@ from crazy_harness.control_plane.views import (
     SnapshotView,
 )
 
-CONTROL_PLANE_VERSION = "0.5.0-dev"
+CONTROL_PLANE_VERSION = "0.6.0-dev"
 
 
 class FaultRequest(BaseModel):
@@ -86,6 +87,13 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
         if runtime.store.projection("run", run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
         return DrainResult(run_id=run_id, steps=runtime.run_until_idle(max_steps=150))
+
+    @app.post("/api/runs/{run_id}/cancel", response_model=CancelResult)
+    def cancel_run(run_id: str) -> CancelResult:
+        try:
+            return CancelResult.model_validate(runtime.cancel_run(run_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
 
     @app.get("/api/snapshot", response_model=SnapshotView)
     def snapshot(run_id: str | None = None) -> SnapshotView:

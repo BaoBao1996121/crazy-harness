@@ -61,7 +61,7 @@ flowchart TB
 |---|---|
 | ResidentRuntime / 常驻运行时 | 持有 Gateway、Store、Scheduler、Kernel、Mailbox 与 Worker 注册；后台线程常驻，Agent 本身是可随时唤醒的逻辑身份，不是永久占用线程。 |
 | EventStore / 事实源 | SQLite append-only Event 与命令状态的持久来源；Projection、UI 和恢复逻辑都从它重建，内存对象不是权威。 |
-| ResidentScheduler / 常驻调度器 | 等待内存 wake signal 或最近 Lease Deadline，每次选择一个未 Ack Delivery 交给对应 Handler；当前是单消费者，普通调度周期异常由 ResidentRuntime 监督并从持久事实恢复。 |
+| ResidentScheduler / 常驻调度器 | 等待内存 wake signal、最近 Deadline 或 1 秒外部写入兜底，以 Round-Robin 将未 Ack Delivery 准入有界线程池；SQLite Delivery + AgentRun + Worker Slot Claim 防重复、重入和跨 Scheduler 容量超卖。 |
 | SupervisorPolicy / 编排策略 | 根据 TeamContract、AgentCard、完成阶段、Attempt、状态和负载提出下一份 PlanPatch，不直接创建正式 Assignment。 |
 | ControlKernel / 控制内核 | 校验 Schema、身份、权限、预算、Contract、Lease、provenance 与 evidence；唯一能把 Candidate 转为正式 Team 事实的边界。 |
 | Assignment / 正式委派 | Supervisor 候选获准后产生的工作合同，包含目标、准出条件、能力、结果种类、Attempt 与持有者。 |
@@ -107,7 +107,7 @@ sequenceDiagram
     Note over K,M: 正式事实原子提交；若路由前崩溃，Event Outbox 按 cursor 补投
 ```
 
-当前 Resident Demo 的 TeamContract 是 `evidence -> artifact -> review`。这不是代码里写死的 A-B-C 消息链：DAG 由 TaskPack 声明，Supervisor 每次都依据最新公共事实提出下一份委派，Kernel 再检查依赖和能力。当前 Contract 的并发上限为 1，因此演示仍按阶段串行；架构可表达并发约束，不等于当前已经实现并验证并行吞吐。
+当前 Resident Demo 的 TeamContract 是 `evidence + risk -> artifact -> review`。这不是代码里写死的 A-B-C 消息链：DAG 由 TaskPack 声明，Supervisor 每次都依据最新公共事实提出下一份委派，Kernel 再检查依赖和能力。两个根阶段会由不同 Worker 真实并行，`artifact` 只在两份正式 Evidence 都完成后启动。受控并发、Claim、Fencing 与取消详见 [`CONTROLLED_CONCURRENCY_WALKTHROUGH.md`](CONTROLLED_CONCURRENCY_WALKTHROUGH.md)。
 
 Team Worker 使用 Scripted Model 提供可复现的动作序列，但每一步都真实经过公共 AgentLoop。需要记住的区分是：
 
@@ -206,7 +206,7 @@ flowchart LR
 | Assignment/Peer child AgentRun | 已接 canonical AgentLoop，可持久 Wait/Resume、重建与 Kernel promotion。 |
 | Team 模型 | 仅 Scripted Model；在线 DeepSeek Team 请求被明确拒绝。 |
 | A2A Transport | 同进程 SQLite EventStore + Durable Mailbox；Remote A2A 尚未实现。 |
-| 并发 | Scheduler 为单消费者，Demo Contract 并发上限为 1；真实并行未实现、未测量。 |
+| 并发 | 默认全局 2、单 Agent 1；Round-Robin 准入，SQLite Delivery + AgentRun + Worker Slot Claim，满载保留在 Durable Mailbox。两路并行和跨 Scheduler 容量已用同步屏障实测；尚无生产吞吐数据。 |
 | 故障语义 | 本地进程崩溃恢复、重投、Lease fencing 与已知 Peer failure propagation；不是生产级分布式容错。 |
 | Team 收益 | 尚无同模型、同任务、同预算的 Single-vs-Team 评测，不能声称 Team 一定优于 Single。 |
 

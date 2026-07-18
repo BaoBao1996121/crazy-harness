@@ -59,17 +59,17 @@ def test_resident_thread_recovers_after_transient_mailbox_selection_error(
     )
 
     coordinator_mailbox = runtime.mailboxes["coordinator"]
-    original_peek = coordinator_mailbox.peek
-    peek_calls = 0
+    original_pending = coordinator_mailbox.pending
+    pending_calls = 0
 
-    def flaky_peek(predicate=None):
-        nonlocal peek_calls
-        peek_calls += 1
-        if peek_calls == 1:
+    def flaky_pending():
+        nonlocal pending_calls
+        pending_calls += 1
+        if pending_calls == 1:
             raise RuntimeError("transient mailbox read failure")
-        return original_peek(predicate)
+        return original_pending()
 
-    monkeypatch.setattr(coordinator_mailbox, "peek", flaky_peek)
+    monkeypatch.setattr(coordinator_mailbox, "pending", flaky_pending)
 
     runtime.start()
     try:
@@ -91,7 +91,7 @@ def test_resident_thread_recovers_after_transient_mailbox_selection_error(
         "reason": "RuntimeError: transient mailbox read failure",
         "recovering": True,
     }
-    assert peek_calls >= 2
+    assert pending_calls >= 2
     assert probe_mailbox.peek() is None
 
 

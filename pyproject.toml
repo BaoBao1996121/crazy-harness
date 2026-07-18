@@ -52,6 +52,8 @@ crazy = "crazy_harness.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+  "smoke: fast end-to-end and hard-boundary checks for vertical exploration",
+  "nightly: slower stress, chaos, repetition, or external-adapter regression",
   "llm: tests that call a real LLM provider",
 ]
 

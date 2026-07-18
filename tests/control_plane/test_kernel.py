@@ -27,6 +27,7 @@ def candidate(kind: CommandKind, *, key: str, payload: dict, actor: str = "build
     )
 
 
+@pytest.mark.smoke
 def test_invalid_model_candidate_is_rejected_before_formal_a2a_event(tmp_path):
     store = SQLiteEventStore(tmp_path / "control.db")
     seed(store)

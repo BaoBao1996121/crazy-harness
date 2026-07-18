@@ -101,4 +101,20 @@ describe("timeline event vocabulary", () => {
     expect(eventMeta("mailbox.delivery.dead_lettered").tone).toBe("danger");
     expect(eventMeta("mailbox.delivery.dead_lettered").important).toBe(true);
   });
+
+  it("hides routine claim renewal but highlights concurrency and cancellation signals", () => {
+    const routineRenewal = record(1, "runtime.delivery.claim.renewed");
+    const backpressure = record(2, "runtime.scheduler.backpressure");
+    const claimLost = record(3, "runtime.delivery.claim.lost");
+    const cancelled = record(4, "run.cancelled");
+
+    expect(selectVisibleEvents([routineRenewal, backpressure, claimLost, cancelled], false))
+      .toEqual([backpressure, claimLost, cancelled]);
+    expect(eventMeta("runtime.scheduler.backpressure").label).toBe(
+      "调度器背压 / Scheduler backpressure",
+    );
+    expect(eventMeta("runtime.delivery.claim.lost").tone).toBe("danger");
+    expect(eventMeta("runtime.delivery.cancelled").tone).toBe("warning");
+    expect(eventMeta("run.cancel.requested").label).toBe("运行取消请求 / Run cancellation requested");
+  });
 });
