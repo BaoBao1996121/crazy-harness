@@ -10,7 +10,7 @@ def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json()["version"] == "v0.6.0-dev"
+    assert response.json()["version"] == "v0.7.0-dev"
 
 
 @pytest.mark.smoke

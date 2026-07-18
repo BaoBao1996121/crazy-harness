@@ -33,6 +33,7 @@ class TeamContract(BaseModel):
     version: int = Field(default=1, ge=1)
     stages: tuple[TeamStageSpec, ...]
     max_parallel_assignments: int = Field(default=1, ge=1, le=32)
+    max_stage_attempts: int = Field(default=3, ge=1, le=20)
     lease_seconds: int = Field(default=30, ge=1, le=3600)
     peer_contract: AssignmentContract | None = None
 
@@ -176,11 +177,20 @@ class CapabilitySupervisorPolicy:
                 completion_ready=True,
             )
 
-        ready = tuple(
+        ready_candidates = tuple(
             stage
             for stage in sorted(contract.stages, key=lambda item: item.stage_id)
             if stage.stage_id not in completed | active
             and set(stage.depends_on).issubset(completed)
+        )
+        exhausted = frozenset(
+            stage.stage_id
+            for stage in ready_candidates
+            if int(context.attempts.get(stage.stage_id, 0))
+            >= contract.max_stage_attempts
+        )
+        ready = tuple(
+            stage for stage in ready_candidates if stage.stage_id not in exhausted
         )
         remaining_capacity = max(0, contract.max_parallel_assignments - len(active))
         loads = dict(context.active_loads)
@@ -217,7 +227,11 @@ class CapabilitySupervisorPolicy:
             loads[card.agent_id] = int(loads.get(card.agent_id, 0)) + 1
 
         blocked_reason = None
-        if unavailable and not selected and not active:
+        if exhausted and not selected and not active:
+            blocked_reason = (
+                f"stage_attempt_budget_exhausted:{','.join(sorted(exhausted))}"
+            )
+        elif unavailable and not selected and not active:
             blocked_reason = (
                 f"no_available_capable_agent:{','.join(sorted(unavailable))}"
             )
@@ -243,7 +257,10 @@ class CapabilitySupervisorPolicy:
                 active,
                 frozenset(stage.stage_id for stage in ready),
                 selected_by_stage,
-                blocked=frozenset(unavailable) if blocked_reason else frozenset(),
+                blocked=(
+                    exhausted
+                    | (frozenset(unavailable) if blocked_reason else frozenset())
+                ),
                 active_agents=context.active_stage_agents,
             ),
             assignments=tuple(selected),

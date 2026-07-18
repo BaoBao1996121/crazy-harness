@@ -113,6 +113,29 @@ def test_resident_single_agent_reuses_model_response_after_persist_crash(tmp_pat
     assert model.call_count == 5
 
 
+def test_deepseek_usage_is_not_double_counted_when_persisted_response_is_reused(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    model = _successful_repo_model()
+    runtime = ResidentRuntime(tmp_path, model_factory=lambda _: model)
+    runtime.arm_fault("after_model_persisted")
+    request = _repo_maintainer_request().model_copy(
+        update={"model_mode": "deepseek"}
+    )
+
+    created = runtime.submit_task(request)
+    runtime.run_until_idle(max_steps=50)
+
+    events = runtime.store.read_all(run_id=created.run_id)
+    snapshot = runtime.snapshot(created.run_id)
+    completed = sum(event.type == "model.completed" for event in events)
+    assert snapshot["run"]["status"] == "succeeded"
+    assert model.call_count == completed == 5
+    assert snapshot["model_budget"]["completed_calls"] == 5
+    assert len(snapshot["model_calls"]) == 5
+
+
 def test_resident_single_agent_recovers_tool_effect_from_ledger_without_reexecution(tmp_path):
     model = _successful_repo_model()
     runtime = ResidentRuntime(tmp_path, model_factory=lambda _: model)

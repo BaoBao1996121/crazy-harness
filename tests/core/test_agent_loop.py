@@ -58,6 +58,62 @@ def test_agent_loop_calls_tool_and_records_result(tmp_path):
     assert event_types[-1] == "agent.stopped"
 
 
+def test_agent_loop_persists_sanitized_model_envelope_not_raw_reasoning(tmp_path):
+    class RawProvider:
+        def complete(self, messages, *, tools=None, response_schema=None):
+            return ModelResponse(
+                content=json.dumps({"type": "stop", "reason": "done"}),
+                raw={"reasoning_content": "private chain"},
+                provider_response_id="response-1",
+                finish_reason="stop",
+            )
+
+    event_log = EventLog(tmp_path / "events.jsonl")
+    event_log.append(Event(run_id="r1", task_id="t1", type="seed", source="test"))
+    loop = AgentLoop(
+        agent_id="generalist",
+        model=RawProvider(),
+        event_log=event_log,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        tool_registry=ToolRegistry(),
+    )
+
+    loop.run_once()
+    completed = next(
+        event for event in event_log.read_all() if event.type == "model.completed"
+    )
+
+    assert "raw" not in completed.payload
+    assert "private chain" not in completed.model_dump_json()
+    assert completed.payload["provider_response_id"] == "response-1"
+
+
+def test_incomplete_provider_finish_reason_never_becomes_a_command(tmp_path):
+    class TruncatedProvider:
+        def complete(self, messages, *, tools=None, response_schema=None):
+            return ModelResponse(
+                content=json.dumps({"type": "stop", "reason": "looks complete"}),
+                finish_reason="length",
+            )
+
+    event_log = EventLog(tmp_path / "events.jsonl")
+    event_log.append(Event(run_id="r1", task_id="t1", type="seed", source="test"))
+    loop = AgentLoop(
+        agent_id="generalist",
+        model=TruncatedProvider(),
+        event_log=event_log,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        tool_registry=ToolRegistry(),
+    )
+
+    loop.run_once()
+    types = [event.type for event in event_log.read_all()]
+
+    assert "model.validation_failed" in types
+    assert "agent.command.validated" not in types
+    assert "agent.stopped" not in types
+
+
 def test_agent_loops_are_isolated_by_assignment_task_id(tmp_path):
     event_log = EventLog(tmp_path / "events.jsonl")
     event_log.append(Event(run_id="r1", task_id="scout-a1", type="assignment.created", source="coordinator"))

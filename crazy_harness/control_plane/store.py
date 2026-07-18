@@ -44,6 +44,18 @@ class UnfencedAckError(RuntimeError):
     """A claimed delivery may only be Acked by its fenced Scheduler commit."""
 
 
+class ModelBudgetExceeded(RuntimeError):
+    """A model call was rejected before transport because its Run budget is full."""
+
+
+class ModelCallConflict(RuntimeError):
+    """A persisted model-call identity was reused with incompatible facts."""
+
+
+class ModelCallRejected(RuntimeError):
+    """The Run state no longer permits a new model call."""
+
+
 class SQLiteEventStore:
     """SQLite event log, command ledger, and rebuildable read projections."""
 
@@ -114,8 +126,325 @@ class SQLiteEventStore:
                 );
                 CREATE INDEX IF NOT EXISTS work_claims_state_expiry
                     ON work_claims(state, expires_at);
+                CREATE TABLE IF NOT EXISTS model_calls (
+                    call_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    reserved_input_tokens INTEGER NOT NULL,
+                    reserved_output_tokens INTEGER NOT NULL,
+                    reserved_cost_microusd INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    prompt_tokens INTEGER,
+                    prompt_cache_hit_tokens INTEGER,
+                    prompt_cache_miss_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    actual_cost_microusd INTEGER,
+                    completion_event_id TEXT UNIQUE,
+                    error_type TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS model_calls_run_state
+                    ON model_calls(run_id, state);
                 """
             )
+
+    def reserve_model_call(
+        self,
+        *,
+        call_id: str,
+        run_id: str,
+        task_id: str,
+        agent_id: str,
+        provider: str,
+        model: str,
+        reserved_input_tokens: int,
+        reserved_output_tokens: int,
+        reserved_cost_microusd: int,
+        max_total_tokens: int,
+        max_cost_microusd: int,
+        max_concurrent_calls: int,
+    ) -> dict[str, Any]:
+        """Atomically reserve one physical model call against a shared Run budget."""
+
+        if min(
+            reserved_input_tokens,
+            reserved_output_tokens,
+            reserved_cost_microusd,
+        ) < 0:
+            raise ValueError("model reservation values cannot be negative")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = self._load_projection(connection, "run", run_id)
+            if run is None or run.get("status") != "running":
+                connection.rollback()
+                raise ModelCallRejected(
+                    f"run does not permit a model call: {run_id}"
+                )
+            existing = connection.execute(
+                "SELECT * FROM model_calls WHERE call_id = ?", (call_id,)
+            ).fetchone()
+            if existing is not None:
+                connection.rollback()
+                raise ModelCallConflict(f"model call already exists: {call_id}")
+            status = self._model_budget_status(connection, run_id)
+            requested_tokens = reserved_input_tokens + reserved_output_tokens
+            if int(status["active_calls"]) >= max_concurrent_calls:
+                connection.rollback()
+                raise ModelBudgetExceeded("model concurrency budget exhausted")
+            if int(status["committed_tokens"]) + requested_tokens > max_total_tokens:
+                connection.rollback()
+                raise ModelBudgetExceeded("model token budget exhausted")
+            if (
+                int(status["committed_cost_microusd"])
+                + reserved_cost_microusd
+                > max_cost_microusd
+            ):
+                connection.rollback()
+                raise ModelBudgetExceeded("model cost budget exhausted")
+            connection.execute(
+                """
+                INSERT INTO model_calls(
+                    call_id, run_id, task_id, agent_id, provider, model, state,
+                    reserved_input_tokens, reserved_output_tokens,
+                    reserved_cost_microusd, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)
+                """,
+                (
+                    call_id,
+                    run_id,
+                    task_id,
+                    agent_id,
+                    provider,
+                    model,
+                    reserved_input_tokens,
+                    reserved_output_tokens,
+                    reserved_cost_microusd,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM model_calls WHERE call_id = ?", (call_id,)
+            ).fetchone()
+            connection.commit()
+        return dict(row)
+
+    def start_model_call_attempt(self, call_id: str) -> int:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state, attempt_count FROM model_calls WHERE call_id = ?",
+                (call_id,),
+            ).fetchone()
+            if row is None or row["state"] not in {"reserved", "in_flight"}:
+                connection.rollback()
+                raise ModelCallConflict(f"model call is not startable: {call_id}")
+            attempt = int(row["attempt_count"]) + 1
+            connection.execute(
+                """
+                UPDATE model_calls
+                SET state = 'in_flight', attempt_count = ?, updated_at = ?
+                WHERE call_id = ?
+                """,
+                (attempt, _utc_now(), call_id),
+            )
+            connection.commit()
+        return attempt
+
+    def fail_model_call(
+        self,
+        call_id: str,
+        *,
+        uncertain: bool,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        state = "unknown" if uncertain else "failed"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state FROM model_calls WHERE call_id = ?", (call_id,)
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ModelCallConflict(f"unknown model call: {call_id}")
+            if row["state"] == "completed":
+                connection.rollback()
+                return
+            connection.execute(
+                """
+                UPDATE model_calls
+                SET state = ?, error_type = ?, error_message = ?, updated_at = ?
+                WHERE call_id = ?
+                """,
+                (state, error_type, error_message, _utc_now(), call_id),
+            )
+            connection.commit()
+
+    def recover_stale_model_calls(
+        self, *, run_id: str, stale_before: datetime
+    ) -> dict[str, int]:
+        """Release unsent reservations and quarantine ambiguous old attempts."""
+
+        if stale_before.tzinfo is None:
+            raise ValueError("model recovery cutoff must be timezone-aware")
+        cutoff = stale_before.isoformat()
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            failed = connection.execute(
+                """
+                UPDATE model_calls
+                SET state = 'failed', error_type = 'AbandonedReservation',
+                    error_message = 'no transport attempt started before recovery',
+                    updated_at = ?
+                WHERE run_id = ? AND state = 'reserved' AND updated_at <= ?
+                """,
+                (now, run_id, cutoff),
+            ).rowcount
+            unknown = connection.execute(
+                """
+                UPDATE model_calls
+                SET state = 'unknown', error_type = 'AbandonedInFlightCall',
+                    error_message = 'transport outcome is unknown after recovery',
+                    updated_at = ?
+                WHERE run_id = ? AND state = 'in_flight' AND updated_at <= ?
+                """,
+                (now, run_id, cutoff),
+            ).rowcount
+            connection.commit()
+        return {"failed": failed, "unknown": unknown}
+
+    def reconcile_model_call(
+        self,
+        *,
+        call_id: str,
+        completion_event_id: str,
+        usage: dict[str, int],
+        actual_cost_microusd: int,
+    ) -> bool:
+        """Record one provider Usage fact; replaying the completion is a no-op."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM model_calls WHERE call_id = ?", (call_id,)
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ModelCallConflict(f"unknown model call: {call_id}")
+            if row["state"] == "completed":
+                if row["completion_event_id"] == completion_event_id:
+                    connection.rollback()
+                    return False
+                connection.rollback()
+                raise ModelCallConflict(
+                    f"model call already reconciled by another completion: {call_id}"
+                )
+            connection.execute(
+                """
+                UPDATE model_calls SET
+                    state = 'completed', prompt_tokens = ?,
+                    prompt_cache_hit_tokens = ?, prompt_cache_miss_tokens = ?,
+                    completion_tokens = ?, total_tokens = ?,
+                    actual_cost_microusd = ?, completion_event_id = ?,
+                    updated_at = ?
+                WHERE call_id = ?
+                """,
+                (
+                    usage["prompt_tokens"],
+                    usage["prompt_cache_hit_tokens"],
+                    usage["prompt_cache_miss_tokens"],
+                    usage["completion_tokens"],
+                    usage["total_tokens"],
+                    actual_cost_microusd,
+                    completion_event_id,
+                    _utc_now(),
+                    call_id,
+                ),
+            )
+            connection.commit()
+        return True
+
+    def model_call(self, call_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM model_calls WHERE call_id = ?", (call_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_model_calls(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM model_calls"
+        values: tuple[str, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id = ?"
+            values = (run_id,)
+        query += " ORDER BY created_at, call_id"
+        with self._connect() as connection:
+            rows = connection.execute(query, values).fetchall()
+        return [dict(row) for row in rows]
+
+    def model_budget_status(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            status = self._model_budget_status(connection, run_id)
+        return status
+
+    @staticmethod
+    def _model_budget_status(
+        connection: sqlite3.Connection, run_id: str
+    ) -> dict[str, int | str]:
+        row = connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN state = 'completed'
+                    THEN total_tokens ELSE 0 END), 0) AS spent_tokens,
+                COALESCE(SUM(CASE WHEN state IN ('reserved', 'in_flight')
+                    THEN reserved_input_tokens + reserved_output_tokens ELSE 0 END), 0)
+                    AS active_reserved_tokens,
+                COALESCE(SUM(CASE WHEN state = 'unknown'
+                    THEN reserved_input_tokens + reserved_output_tokens ELSE 0 END), 0)
+                    AS unknown_reserved_tokens,
+                COALESCE(SUM(CASE WHEN state = 'completed'
+                    THEN actual_cost_microusd ELSE 0 END), 0)
+                    AS estimated_spent_microusd,
+                COALESCE(SUM(CASE WHEN state IN ('reserved', 'in_flight')
+                    THEN reserved_cost_microusd ELSE 0 END), 0)
+                    AS active_reserved_microusd,
+                COALESCE(SUM(CASE WHEN state = 'unknown'
+                    THEN reserved_cost_microusd ELSE 0 END), 0)
+                    AS unknown_reserved_microusd,
+                COALESCE(SUM(CASE WHEN state IN ('reserved', 'in_flight')
+                    THEN 1 ELSE 0 END), 0)
+                    AS active_calls,
+                COALESCE(SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END), 0)
+                    AS completed_calls,
+                COALESCE(SUM(CASE WHEN state = 'unknown' THEN 1 ELSE 0 END), 0)
+                    AS unknown_calls
+            FROM model_calls WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        status = dict(row)
+        status["run_id"] = run_id
+        status["committed_tokens"] = (
+            int(status["spent_tokens"])
+            + int(status["active_reserved_tokens"])
+            + int(status["unknown_reserved_tokens"])
+        )
+        status["committed_cost_microusd"] = (
+            int(status["estimated_spent_microusd"])
+            + int(status["active_reserved_microusd"])
+            + int(status["unknown_reserved_microusd"])
+        )
+        return status
 
     def claim_work(
         self,
@@ -325,6 +654,37 @@ class SQLiteEventStore:
             rows = connection.execute(query, values).fetchall()
         return [dict(row) for row in rows]
 
+    def fail_work_claim_bundle(
+        self, claim_key: str, *, now: datetime | None = None
+    ) -> int:
+        """Fence every key atomically claimed with one terminal Run delivery."""
+
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("work claim invalidation clock must be timezone-aware")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT owner_id, claimed_at, state
+                FROM work_claims WHERE claim_key = ?
+                """,
+                (claim_key,),
+            ).fetchone()
+            if row is None or row["state"] != "active":
+                connection.rollback()
+                return 0
+            failed = connection.execute(
+                """
+                UPDATE work_claims
+                SET state = 'failed', updated_at = ?
+                WHERE owner_id = ? AND claimed_at = ? AND state = 'active'
+                """,
+                (current.isoformat(), row["owner_id"], row["claimed_at"]),
+            ).rowcount
+            connection.commit()
+        return failed
+
     def append(self, event: Event) -> Event:
         """Append once by Event.id and update projections in the same transaction."""
 
@@ -357,6 +717,11 @@ class SQLiteEventStore:
                     raise WorkClaimLost(
                         "event append rejected because the run is cancelled"
                     )
+                if run is not None and run.get("status") == "failed":
+                    connection.rollback()
+                    raise WorkClaimLost(
+                        "event append rejected because the run is terminal"
+                    )
             if event.type == "mailbox.delivery.acked":
                 mailbox_id = str(event.payload.get("mailbox_id", ""))
                 delivery_id = str(event.payload.get("delivery_id", ""))
@@ -372,7 +737,8 @@ class SQLiteEventStore:
                     cancellation_cleanup = (
                         claim_expired
                         and run is not None
-                        and run.get("status") in {"cancelling", "cancelled"}
+                        and run.get("status")
+                        in {"cancelling", "cancelled", "failed"}
                     )
                     if not cancellation_cleanup:
                         raise UnfencedAckError(
@@ -705,6 +1071,7 @@ class SQLiteEventStore:
                 "status": "running",
                 "phase": "intake",
                 "model_mode": event.payload.get("model_mode", "scripted"),
+                "model_budget": event.payload.get("model_budget", {}),
                 "behavior_version": event.payload.get("behavior_version", "v0.1.0"),
                 "started_at": event.created_at.isoformat(),
                 "event_count": 0,

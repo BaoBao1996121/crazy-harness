@@ -345,6 +345,7 @@ class ResidentDemoTeamTaskPack:
         stage_id: str,
         agent_id: str,
         brief: str,
+        model_mode: str,
         model: ModelProvider,
         event_log,
         artifact_store: ArtifactStore,
@@ -358,6 +359,7 @@ class ResidentDemoTeamTaskPack:
             assignment_id=assignment_id,
             stage_id=stage_id,
             agent_id=agent_id,
+            model_mode=model_mode,
             event_log=event_log,
         )
         return self._build_loop(
@@ -367,6 +369,7 @@ class ResidentDemoTeamTaskPack:
             assignment_id=assignment_id,
             agent_id=agent_id,
             brief=brief,
+            model_mode=model_mode,
             model=model,
             event_log=event_log,
             artifact_store=artifact_store,
@@ -391,6 +394,7 @@ class ResidentDemoTeamTaskPack:
         correlation_id: str,
         agent_id: str,
         brief: str,
+        model_mode: str,
         model: ModelProvider,
         event_log,
         artifact_store: ArtifactStore,
@@ -402,6 +406,7 @@ class ResidentDemoTeamTaskPack:
             run_id=run_id,
             correlation_id=correlation_id,
             agent_id=agent_id,
+            model_mode=model_mode,
             event_log=event_log,
         )
         return self._build_loop(
@@ -411,6 +416,7 @@ class ResidentDemoTeamTaskPack:
             assignment_id=f"peer:{correlation_id}",
             agent_id=agent_id,
             brief=brief,
+            model_mode=model_mode,
             model=model,
             event_log=event_log,
             artifact_store=artifact_store,
@@ -435,6 +441,7 @@ class ResidentDemoTeamTaskPack:
         assignment_id: str,
         agent_id: str,
         brief: str,
+        model_mode: str,
         model: ModelProvider,
         event_log,
         artifact_store: ArtifactStore,
@@ -466,7 +473,7 @@ class ResidentDemoTeamTaskPack:
             runtime_manifest=RuntimeManifest(
                 agent_id=agent_id,
                 task_id=task_id,
-                mode="scripted",
+                mode=model_mode,
                 available_tools=tools.specs(),
                 workspace_policy={
                     "root_task_id": root_task_id,
@@ -474,7 +481,7 @@ class ResidentDemoTeamTaskPack:
                 },
                 network_policy={"default": "deny"},
                 model_profile={
-                    "provider_mode": "scripted",
+                    "provider_mode": model_mode,
                     "one_action_per_turn": True,
                 },
             ),
@@ -520,7 +527,7 @@ class ResidentDemoTeamTaskPack:
             policy_context=PolicyContext(
                 agent_id=agent_id,
                 assignment_id=assignment_id,
-                mode="scripted",
+                mode=model_mode,
                 allowed_tools=frozenset(spec.name for spec in tools.specs()),
             ),
             message_handler=message_handler,
@@ -537,6 +544,7 @@ class ResidentDemoTeamTaskPack:
         assignment_id: str,
         stage_id: str,
         agent_id: str,
+        model_mode: str,
         event_log,
     ) -> ToolRegistry:
         tool_name = self._TOOL_BY_STAGE[stage_id]
@@ -596,11 +604,17 @@ class ResidentDemoTeamTaskPack:
                 output=json.dumps(payload, ensure_ascii=False),
             )
 
-        tools.register(self._read_only_spec(tool_name, agent_id), inspect)
+        tools.register(self._read_only_spec(tool_name, agent_id, model_mode), inspect)
         return tools
 
     def _peer_tools(
-        self, *, run_id: str, correlation_id: str, agent_id: str, event_log
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        agent_id: str,
+        model_mode: str,
+        event_log,
     ) -> ToolRegistry:
         tools = ToolRegistry()
 
@@ -633,11 +647,13 @@ class ResidentDemoTeamTaskPack:
                 output=json.dumps(payload, ensure_ascii=False),
             )
 
-        tools.register(self._read_only_spec(self._PEER_TOOL, agent_id), inspect)
+        tools.register(
+            self._read_only_spec(self._PEER_TOOL, agent_id, model_mode), inspect
+        )
         return tools
 
     @staticmethod
-    def _read_only_spec(name: str, agent_id: str) -> ToolSpec:
+    def _read_only_spec(name: str, agent_id: str, model_mode: str) -> ToolSpec:
         return ToolSpec(
             name=name,
             description="Read a bounded, public Team evidence capsule from the persistent EventStore.",
@@ -652,5 +668,5 @@ class ResidentDemoTeamTaskPack:
             is_read_only=True,
             is_concurrency_safe=True,
             allowed_agents={agent_id},
-            allowed_modes={"scripted"},
+            allowed_modes={model_mode},
         )

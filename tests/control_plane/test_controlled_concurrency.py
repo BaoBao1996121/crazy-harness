@@ -741,6 +741,70 @@ def test_durable_run_cancellation_invalidates_a_remote_dispatch_owner(tmp_path):
         scheduler.shutdown()
 
 
+def test_failed_run_persistently_fences_late_dispatch_writes(tmp_path):
+    store = SQLiteEventStore(tmp_path / "events.db")
+    created = store.append(
+        Event(
+            run_id="run-remote-failure",
+            task_id="task-remote-failure",
+            type="run.created",
+            source="test",
+            payload={"title": "Remote failure fence"},
+        )
+    )
+    assignment = store.append(
+        Event(
+            run_id=created.run_id,
+            task_id=created.task_id,
+            type="assignment.created",
+            source="test",
+            payload={"assignment_id": "late-assignment", "agent_id": "worker"},
+        )
+    )
+    mailbox = DurableMailbox("worker", store)
+    mailbox.send(assignment, delivery_id="late-after-failure")
+    scheduler = ResidentScheduler(store, FaultController(), max_workers=1)
+    started = ThreadEvent()
+    release = ThreadEvent()
+
+    def late_write(delivery):
+        started.set()
+        assert release.wait(2)
+        store.append(
+            Event(
+                run_id=delivery.event.run_id,
+                task_id=delivery.event.task_id,
+                type="tool.completed",
+                source="stale.remote-runtime",
+                payload={"result": "must be fenced"},
+            )
+        )
+
+    scheduler.register("worker", mailbox, late_write)
+    try:
+        assert scheduler.dispatch_available() == 1
+        assert started.wait(1)
+        store.append(
+            Event(
+                run_id=created.run_id,
+                task_id=created.task_id,
+                type="run.failed",
+                source="other.runtime",
+                payload={"reason": "terminal model call"},
+            )
+        )
+        release.set()
+        _wait_until(lambda: scheduler.in_flight_count == 0)
+
+        assert not any(
+            event.type == "tool.completed"
+            for event in store.read_all(run_id=created.run_id)
+        )
+    finally:
+        release.set()
+        scheduler.shutdown()
+
+
 @pytest.mark.smoke
 def test_run_cancellation_propagates_to_inflight_handler_and_acks_delivery(tmp_path):
     store = SQLiteEventStore(tmp_path / "events.db")

@@ -44,7 +44,6 @@ export function CreateRunDialog({
       chooseTaskPack(taskPack);
       return;
     }
-    setModelMode("scripted");
     setTitle("检查一次常驻协作 / Inspect resident teamwork");
     setBrief("收集证据、生成受控制品、进行一跳对账，并在独立审查后完成。 / Collect evidence, compose a bounded artifact, perform one peer check, and complete after independent review.");
   };
@@ -72,7 +71,7 @@ export function CreateRunDialog({
               title,
               brief,
               execution_mode: executionMode,
-              model_mode: executionMode === "team" ? "scripted" : modelMode,
+              model_mode: modelMode,
               task_pack: taskPackForExecution(executionMode, taskPack),
             }).then(onClose);
           }}
@@ -86,7 +85,7 @@ export function CreateRunDialog({
               </button>
               <button type="button" className={executionMode === "team" ? "active" : ""} onClick={() => chooseExecutionMode("team")}>
                 <Users size={17} aria-hidden="true" />
-                <span><strong>Agent Team 演示</strong><small>总控、侦察、构建、审查 / A2A story</small></span>
+                <span><strong>Agent Team 真协作</strong><small>总控、侦察、构建、审查 / Resident A2A</small></span>
               </button>
             </div>
           </fieldset>
@@ -127,12 +126,12 @@ export function CreateRunDialog({
             <button
               type="button"
               className={`model-option ${modelMode === "deepseek" ? "selected" : ""}`}
-              disabled={!deepseekConfigured || executionMode !== "single"}
+              disabled={!deepseekConfigured}
               onClick={() => setModelMode("deepseek")}
-              title={!deepseekConfigured ? "需要 DEEPSEEK_API_KEY" : executionMode !== "single" ? "Team 暂为确定性演示" : "DeepSeek V4 Flash"}
+              title={!deepseekConfigured ? "需要 DEEPSEEK_API_KEY" : "DeepSeek V4 Flash"}
             >
               <Cpu size={15} aria-hidden="true" />
-              <div><strong>DeepSeek V4 Flash</strong><span>{deepseekConfigured ? "真实模型已就绪 / Live model ready" : "尚未配置 API Key / API key not configured"}</span></div>
+              <div><strong>DeepSeek V4 Flash</strong><span>{deepseekConfigured ? (executionMode === "team" ? "真实 Team + 持久预算 / Live Team governed" : "真实模型已就绪 / Live model ready") : "尚未配置 API Key / API key not configured"}</span></div>
             </button>
           </div>
           <div className="dialog-actions">

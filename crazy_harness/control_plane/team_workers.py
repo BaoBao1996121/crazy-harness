@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -12,12 +13,22 @@ from crazy_harness.control_plane.kernel import (
     ControlKernel,
     KernelDecision,
 )
-from crazy_harness.control_plane.store import SQLiteEventStore
+from crazy_harness.control_plane.model_governance import ModelCallFailed
+from crazy_harness.control_plane.store import (
+    ModelBudgetExceeded,
+    ModelCallRejected,
+    SQLiteEventStore,
+)
 from crazy_harness.core.a2a.orchestration import TeamContract
 from crazy_harness.core.agents import AgentAction, AgentLoop, AssignmentContract
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.events import Event
-from crazy_harness.core.models import FakeModelProvider, ModelProvider
+from crazy_harness.core.models import (
+    DeepSeekOpenAIProvider,
+    FakeModelProvider,
+    ModelCallAuthority,
+    ModelProvider,
+)
 from crazy_harness.core.runtime.mailbox import Delivery
 from crazy_harness.taskpacks import ResidentDemoTeamTaskPack
 
@@ -25,6 +36,21 @@ Deliver = Callable[[str, Event, str], None]
 RouteDecision = Callable[[KernelDecision], None]
 LeaseGuard = Callable[[Event, str], bool]
 FaultInjector = Callable[[str], None]
+RunFailure = Callable[[Event, str], None]
+
+
+@dataclass(frozen=True)
+class TeamModelBinding:
+    run_id: str
+    root_task_id: str
+    agent_run_id: str
+    agent_id: str
+    agent_run_kind: str
+    model_mode: str
+    stage_id: str | None = None
+
+
+TeamModelFactory = Callable[[TeamModelBinding], ModelProvider]
 
 
 class TeamWorkerEngine:
@@ -43,6 +69,9 @@ class TeamWorkerEngine:
         deliver: Deliver,
         route_decision: RouteDecision,
         begin_leased_step: LeaseGuard,
+        fail_run: RunFailure,
+        model_factory: TeamModelFactory | None = None,
+        model_call_authority: ModelCallAuthority | None = None,
         fault_injector: FaultInjector | None = None,
     ) -> None:
         self.data_dir = data_dir
@@ -53,6 +82,9 @@ class TeamWorkerEngine:
         self.deliver = deliver
         self.route_decision = route_decision
         self.begin_leased_step = begin_leased_step
+        self.fail_run = fail_run
+        self.model_factory = model_factory
+        self.model_call_authority = model_call_authority
         self.fault_injector = fault_injector
         self._models: dict[str, ModelProvider] = {}
         self._loops: dict[str, AgentLoop] = {}
@@ -101,7 +133,18 @@ class TeamWorkerEngine:
 
         self._ensure_assignment_seed(assignment)
         loop = self._assignment_loop(assignment)
-        loop.run_once()
+        try:
+            loop.run_once()
+        except ModelCallFailed as exc:
+            self.fail_run(assignment, str(exc))
+            return
+        except (ModelBudgetExceeded, ModelCallRejected) as exc:
+            self._fail_assignment(
+                assignment,
+                reason=str(exc),
+                causation_id=trigger.id,
+            )
+            return
         self._advance_assignment(assignment, loop)
 
     def _assignment_loop(self, assignment: Event) -> AgentLoop:
@@ -122,7 +165,19 @@ class TeamWorkerEngine:
             stage_id,
             peer_receiver=peer_receiver,
         )
-        model = self._scripted_model(agent_run_id, responses)
+        model_mode = self._model_mode_for_run(assignment.run_id)
+        model = self._model_for(
+            TeamModelBinding(
+                run_id=assignment.run_id,
+                root_task_id=assignment.task_id,
+                agent_run_id=agent_run_id,
+                agent_id=str(assignment.payload["agent_id"]),
+                agent_run_kind="assignment",
+                model_mode=model_mode,
+                stage_id=stage_id,
+            ),
+            responses,
+        )
         run = self.store.projection("run", assignment.run_id) or {}
         loop = self.task_pack.build_assignment_loop(
             run_id=assignment.run_id,
@@ -135,6 +190,7 @@ class TeamWorkerEngine:
                 f"Root task: {run.get('brief', '')}\n"
                 f"Assignment: {assignment.payload.get('goal', contract.goal)}"
             ),
+            model_mode=model_mode,
             model=model,
             event_log=self.store,
             artifact_store=self.artifacts,
@@ -147,6 +203,7 @@ class TeamWorkerEngine:
             ),
             fault_injector=self.fault_injector,
         )
+        loop.model_call_authority = self.model_call_authority
         self._loops[agent_run_id] = loop
         return loop
 
@@ -393,7 +450,18 @@ class TeamWorkerEngine:
         correlation_id = str(request.payload["correlation_id"])
         self._ensure_peer_seed(request, agent_id=agent_id)
         loop = self._peer_loop(request, agent_id=agent_id)
-        loop.run_once()
+        try:
+            loop.run_once()
+        except ModelCallFailed as exc:
+            self.fail_run(request, str(exc))
+            return
+        except (ModelBudgetExceeded, ModelCallRejected) as exc:
+            self._fail_requesting_assignment(
+                request,
+                reason=str(exc),
+                causation_id=request.id,
+            )
+            return
         self._advance_peer(
             request, agent_id=agent_id, correlation_id=correlation_id, loop=loop
         )
@@ -409,8 +477,16 @@ class TeamWorkerEngine:
             event for event in child_events if event.type == "agent.run.created"
         )
         contract = AssignmentContract.model_validate(seed.payload["contract"])
-        model = self._scripted_model(
-            agent_run_id,
+        model_mode = self._model_mode_for_run(request.run_id)
+        model = self._model_for(
+            TeamModelBinding(
+                run_id=request.run_id,
+                root_task_id=request.task_id,
+                agent_run_id=agent_run_id,
+                agent_id=agent_id,
+                agent_run_kind="peer",
+                model_mode=model_mode,
+            ),
             self.task_pack.scripted_peer_responses(),
         )
         loop = self.task_pack.build_peer_loop(
@@ -420,6 +496,7 @@ class TeamWorkerEngine:
             correlation_id=correlation_id,
             agent_id=agent_id,
             brief=str(request.payload.get("brief", "bounded peer reconciliation")),
+            model_mode=model_mode,
             model=model,
             event_log=self.store,
             artifact_store=self.artifacts,
@@ -427,6 +504,7 @@ class TeamWorkerEngine:
             assignment_contract=contract,
             fault_injector=self.fault_injector,
         )
+        loop.model_call_authority = self.model_call_authority
         self._loops[agent_run_id] = loop
         return loop
 
@@ -666,6 +744,30 @@ class TeamWorkerEngine:
         model = FakeModelProvider(responses[completed:])
         self._models[agent_run_id] = model
         return model
+
+    def _model_for(
+        self, binding: TeamModelBinding, scripted_responses: list[str]
+    ) -> ModelProvider:
+        existing = self._models.get(binding.agent_run_id)
+        if existing is not None:
+            return existing
+        if binding.model_mode == "scripted":
+            return self._scripted_model(binding.agent_run_id, scripted_responses)
+        if binding.model_mode != "deepseek":
+            raise ValueError(f"unsupported Team model mode: {binding.model_mode}")
+        model = (
+            self.model_factory(binding)
+            if self.model_factory is not None
+            else DeepSeekOpenAIProvider(
+                user_id=f"{binding.run_id}:{binding.agent_id}"
+            )
+        )
+        self._models[binding.agent_run_id] = model
+        return model
+
+    def _model_mode_for_run(self, run_id: str) -> str:
+        run = self.store.projection("run", run_id) or {}
+        return str(run.get("model_mode", "scripted"))
 
     def _fail_requesting_assignment(
         self,

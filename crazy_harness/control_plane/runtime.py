@@ -6,6 +6,7 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 from typing import Literal
@@ -22,12 +23,16 @@ from crazy_harness.control_plane.kernel import (
     InjectedKernelCrash,
     KernelDecision,
 )
+from crazy_harness.control_plane.model_governance import (
+    ModelBudgetConfig,
+    PersistentModelCallAuthority,
+)
 from crazy_harness.control_plane.store import (
     SQLiteEventStore,
     UnfencedAckError,
     WorkClaimLost,
 )
-from crazy_harness.control_plane.team_workers import TeamWorkerEngine
+from crazy_harness.control_plane.team_workers import TeamModelFactory, TeamWorkerEngine
 from crazy_harness.core.a2a.coordinator import AgentStatus
 from crazy_harness.core.a2a.messages import AgentCard
 from crazy_harness.core.a2a.orchestration import (
@@ -69,6 +74,7 @@ class TaskRequest(BaseModel):
     task_pack: (
         Literal["resident-demo", "repo-maintainer", "evidence-research"] | None
     ) = None
+    model_budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
 
 
 class RunCreated(BaseModel):
@@ -199,7 +205,13 @@ class ResidentScheduler:
             self._accepting = False
             self._condition.notify_all()
 
-    def cancel_run(self, run_id: str, *, reason: str) -> int:
+    def cancel_run(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        record_events: bool = True,
+    ) -> int:
         with self._condition:
             self._cancelled_runs.add(run_id)
             targets = [
@@ -215,18 +227,19 @@ class ResidentScheduler:
                 context.cancellation.cancel(reason)
             self._wake_generation += 1
             self._condition.notify_all()
-        for worker_id, delivery, claims, _ in targets:
-            self._append(
-                delivery.event,
-                "runtime.delivery.cancellation.requested",
-                {
-                    "agent_id": worker_id,
-                    "delivery_id": delivery.delivery_id,
-                    "reason": reason,
-                    "claim_tokens": claims,
-                },
-                key=f"cancel-requested:{delivery.delivery_id}:{reason}",
-            )
+        if record_events:
+            for worker_id, delivery, claims, _ in targets:
+                self._append(
+                    delivery.event,
+                    "runtime.delivery.cancellation.requested",
+                    {
+                        "agent_id": worker_id,
+                        "delivery_id": delivery.delivery_id,
+                        "reason": reason,
+                        "claim_tokens": claims,
+                    },
+                    key=f"cancel-requested:{delivery.delivery_id}:{reason}",
+                )
         return len(targets)
 
     def in_flight_for_run(self, run_id: str) -> int:
@@ -1146,11 +1159,13 @@ class ResidentRuntime:
         data_dir: Path,
         *,
         model_factory: ModelFactory | None = None,
+        team_model_factory: TeamModelFactory | None = None,
         supervisor_policy: SupervisorPolicy | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteEventStore(self.data_dir / "control_plane.db")
+        self.model_call_authority = PersistentModelCallAuthority(self.store)
         self.artifacts = ArtifactStore(self.data_dir / "artifacts")
         self.faults = FaultController()
         self.kernel = ControlKernel(self.store, fault_controller=self.faults)
@@ -1189,6 +1204,9 @@ class ResidentRuntime:
             begin_leased_step=lambda event, agent_id: self._begin_leased_step(
                 event, agent_id=agent_id
             ),
+            fail_run=self._fail_team_run_from_model,
+            model_factory=team_model_factory,
+            model_call_authority=self.model_call_authority,
             fault_injector=self.faults.trip,
         )
         self._register_agents()
@@ -1220,6 +1238,7 @@ class ResidentRuntime:
         self._route_cursor = 0
         self._route_lock = threading.RLock()
         self._reconcile_routes()
+        self._reconcile_failed_runs()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -1251,6 +1270,8 @@ class ResidentRuntime:
                 self._flush_scheduler_cycle_failures()
                 stage = "route_reconciliation"
                 self._reconcile_routes()
+                stage = "failed_run_reconciliation"
+                self._reconcile_failed_runs()
                 stage = "cancellation_reconciliation"
                 self._reconcile_cancellations()
                 stage = "lease_expiry"
@@ -1297,11 +1318,6 @@ class ResidentRuntime:
     def submit_task(self, request: TaskRequest) -> RunCreated:
         if request.execution_mode == "single":
             return self._submit_single_task(request)
-        if request.model_mode != "scripted":
-            raise ValueError(
-                "team mode currently uses a deterministic Supervisor with scripted "
-                "workers; use execution_mode='single' for DeepSeek"
-            )
         if request.task_pack not in {None, "resident-demo"}:
             raise ValueError(
                 "team mode currently supports only the resident-demo task pack"
@@ -1342,6 +1358,145 @@ class ResidentRuntime:
             "active_cancelled": active_cancelled,
             "queued_cancelled": queued_cancelled,
         }
+
+    def _fail_team_run_from_model(self, identity: Event, reason: str) -> None:
+        run = self.store.projection("run", identity.run_id)
+        if run is None or run.get("status") in {"succeeded", "failed", "cancelled"}:
+            return
+        self._append_deterministic(
+            identity,
+            f"run-failure-requested:{identity.run_id}:model:{identity.id}",
+            "run.failure.requested",
+            {
+                "reason": reason,
+                "failure_class": "terminal_model_call",
+                "failure_scope": "run",
+            },
+            source="runtime.model-governance",
+        )
+        self.scheduler.signal()
+
+    def _finalize_failed_run(self, requested: Event, *, reason: str) -> bool:
+        run = self.store.projection("run", requested.run_id)
+        if run is None or run.get("status") in {"succeeded", "cancelled"}:
+            return False
+        # Failure finalization runs outside the Worker dispatch. Deny new local
+        # reservations first, then fence remote claims before writing terminal facts.
+        self.scheduler.cancel_run(
+            requested.run_id,
+            reason=reason,
+            record_events=False,
+        )
+        self._fail_assignments_and_leases(requested, reason=reason)
+        self._fail_queued_deliveries(requested.run_id, reason=reason)
+        if run.get("status") != "failed":
+            self._append_deterministic(
+                requested,
+                f"run-failed:{requested.run_id}:model",
+                "run.failed",
+                {
+                    "reason": reason,
+                    "failure_class": "terminal_model_call",
+                    "failure_scope": "run",
+                },
+                source="runtime.model-governance",
+            )
+        return True
+
+    def _fail_assignments_and_leases(self, identity: Event, *, reason: str) -> None:
+        snapshot = self.store.snapshot(run_id=identity.run_id)
+        for assignment in snapshot["assignments"]:
+            if assignment.get("status") in {
+                "succeeded",
+                "completed",
+                "failed",
+                "expired",
+                "cancelled",
+            }:
+                continue
+            assignment_id = str(assignment["assignment_id"])
+            self._append_deterministic(
+                identity,
+                f"model-failed-assignment:{assignment_id}",
+                "assignment.failed",
+                {
+                    "assignment_id": assignment_id,
+                    "agent_id": assignment.get("agent_id"),
+                    "stage_id": assignment.get("stage_id"),
+                    "reason": reason,
+                },
+                source="runtime.model-governance",
+            )
+        for lease in snapshot["leases"]:
+            if lease.get("status") != "active":
+                continue
+            assignment_id = str(lease["assignment_id"])
+            self._append_deterministic(
+                identity,
+                f"model-failed-lease-released:{assignment_id}",
+                "assignment.lease.released",
+                {
+                    "lease_id": lease["lease_id"],
+                    "assignment_id": assignment_id,
+                    "agent_id": lease.get("agent_id"),
+                    "stage_id": lease.get("stage_id"),
+                    "reason": "run_failed_after_terminal_model_call",
+                },
+                source="runtime.model-governance",
+            )
+
+    def _fail_queued_deliveries(self, run_id: str, *, reason: str) -> int:
+        failed = 0
+        for worker_id, mailbox in self.mailboxes.items():
+            for delivery in mailbox.pending():
+                if delivery.event.run_id != run_id:
+                    continue
+                self.store.fail_work_claim_bundle(
+                    f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
+                )
+                self._append_deterministic(
+                    delivery.event,
+                    f"failed-run-delivery:{worker_id}:{delivery.delivery_id}",
+                    "runtime.delivery.cancelled",
+                    {
+                        "agent_id": worker_id,
+                        "delivery_id": delivery.delivery_id,
+                        "reason": reason,
+                        "mode": "run_failed",
+                    },
+                    source="runtime.model-governance",
+                )
+                try:
+                    mailbox.ack(delivery.delivery_id)
+                except UnfencedAckError:
+                    continue
+                failed += 1
+        return failed
+
+    def _reconcile_failed_runs(self) -> int:
+        """Rebuild the denylist and drain messages that arrive after Run failure."""
+
+        changed = 0
+        for run in self.store.snapshot()["runs"]:
+            if run.get("status") != "failed":
+                continue
+            run_id = str(run["run_id"])
+            failed = next(
+                (
+                    event
+                    for event in reversed(self.store.read_all(run_id=run_id))
+                    if event.type == "run.failed"
+                ),
+                None,
+            )
+            reason = (
+                str(failed.payload.get("reason", "run failed"))
+                if failed is not None
+                else "run failed"
+            )
+            self.scheduler.cancel_run(run_id, reason=reason, record_events=False)
+            changed += self._fail_queued_deliveries(run_id, reason=reason)
+        return changed
 
     def _reconcile_cancellations(self) -> int:
         changed = 0
@@ -1481,8 +1636,9 @@ class ResidentRuntime:
                     "execution_mode": "team",
                     "task_pack": self.team_pack.task_pack_id,
                     "team_contract": self.team_contract.model_dump(mode="json"),
+                    "model_budget": request.model_budget.model_dump(mode="json"),
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.6.0-dev",
+                    "behavior_version": "v0.7.0-dev",
                 },
             )
         )
@@ -1525,6 +1681,7 @@ class ResidentRuntime:
                     "model_mode": request.model_mode,
                     "execution_mode": "single",
                     "task_pack": task_pack_id,
+                    "model_budget": request.model_budget.model_dump(mode="json"),
                     "workspace_path": str(prepared.workspace),
                     "behavior_version": "v0.3.0-dev",
                 },
@@ -1558,6 +1715,7 @@ class ResidentRuntime:
         waits_without_progress = 0
         while self.scheduler.completed_steps - started_at < max_steps:
             self._reconcile_routes()
+            self._reconcile_failed_runs()
             self._reconcile_cancellations()
             if self.scheduler.run_once():
                 waits_without_progress = 0
@@ -1738,9 +1896,39 @@ class ResidentRuntime:
             for claim in all_work_claims
             if run_id is None or claim["claim_key"] in visible_claim_keys
         ]
+        selected_run_id = str(run["run_id"]) if run is not None else None
+        model_calls = (
+            self.store.list_model_calls(run_id=selected_run_id)
+            if selected_run_id is not None
+            else []
+        )
+        model_budget = None
+        if selected_run_id is not None:
+            model_budget = self.store.model_budget_status(selected_run_id)
+            limits = ModelBudgetConfig.model_validate(run.get("model_budget") or {})
+            max_cost_microusd = int(limits.max_cost_usd * Decimal(1_000_000))
+            model_budget.update(
+                {
+                    **limits.model_dump(mode="json"),
+                    "max_cost_microusd": max_cost_microusd,
+                    "remaining_tokens": max(
+                        0,
+                        limits.max_total_tokens
+                        - int(model_budget["committed_tokens"]),
+                    ),
+                    "remaining_cost_microusd": max(
+                        0,
+                        max_cost_microusd
+                        - int(model_budget["committed_cost_microusd"]),
+                    ),
+                    "cost_kind": "estimate",
+                }
+            )
         return {
             "run": run,
             **snapshot,
+            "model_budget": model_budget,
+            "model_calls": model_calls,
             "queued_deliveries": queued_deliveries,
             "work_claims": work_claims,
             "runtime": {
@@ -1942,6 +2130,7 @@ class ResidentRuntime:
             assignment_contract=contract,
             fault_injector=self.faults.trip,
         )
+        loop.model_call_authority = self.model_call_authority
         self._single_loops[trigger.task_id] = loop
         return loop
 
@@ -2399,6 +2588,12 @@ class ResidentRuntime:
             return routed
 
     def _route_event(self, event: Event) -> bool:
+        if event.type == "run.failure.requested":
+            self._finalize_failed_run(
+                event,
+                reason=str(event.payload.get("reason", "model call failed")),
+            )
+            return True
         receiver: str | None = None
         if event.type == "assignment.created":
             receiver = event.payload.get("agent_id")

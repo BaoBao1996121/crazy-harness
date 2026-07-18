@@ -158,6 +158,34 @@ class WorkClaimView(_View):
     updated_at: str
 
 
+class ModelBudgetView(_View):
+    run_id: str
+    active_calls: int = Field(ge=0)
+    completed_calls: int = Field(ge=0)
+    unknown_calls: int = Field(ge=0)
+    spent_tokens: int = Field(ge=0)
+    committed_tokens: int = Field(ge=0)
+    remaining_tokens: int = Field(ge=0)
+    estimated_spent_microusd: int = Field(ge=0)
+    committed_cost_microusd: int = Field(ge=0)
+    remaining_cost_microusd: int = Field(ge=0)
+    cost_kind: str
+
+
+class ModelCallView(_View):
+    call_id: str
+    run_id: str
+    task_id: str
+    agent_id: str
+    provider: str
+    model: str
+    state: str
+    attempt_count: int = Field(ge=0)
+    reserved_input_tokens: int = Field(ge=0)
+    reserved_output_tokens: int = Field(ge=0)
+    reserved_cost_microusd: int = Field(ge=0)
+
+
 class SnapshotView(BaseModel):
     run: RunView | None
     agents: list[AgentView]
@@ -170,6 +198,8 @@ class SnapshotView(BaseModel):
     dream_jobs: list[DreamJobView]
     queued_deliveries: list[QueuedDeliveryView]
     work_claims: list[WorkClaimView]
+    model_budget: ModelBudgetView | None
+    model_calls: list[ModelCallView]
     runtime: RuntimeView
 
 

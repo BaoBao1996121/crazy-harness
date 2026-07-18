@@ -4,6 +4,8 @@ import {
   Bug,
   ChevronRight,
   CircleAlert,
+  CircleDollarSign,
+  Cpu,
   Database,
   FileJson,
   Gauge,
@@ -27,11 +29,12 @@ import { skillViewFromEvents } from "../lib/skills";
 import { agentLabel, boundaryLabel, contentLabel, statusLabel } from "../lib/i18n";
 import { normalizeScheduler, schedulerPressure } from "../lib/scheduler";
 
-export type InspectorTab = "event" | "context" | "a2a" | "memory" | "evolution" | "chaos";
+export type InspectorTab = "event" | "context" | "model" | "a2a" | "memory" | "evolution" | "chaos";
 
 const TABS: { id: InspectorTab; label: string; title: string; icon: LucideIcon }[] = [
   { id: "event", label: "事件", title: "事件 / Event", icon: FileJson },
   { id: "context", label: "上下文", title: "上下文 / Context", icon: Layers3 },
+  { id: "model", label: "模型", title: "模型治理 / Model Governance", icon: Cpu },
   { id: "a2a", label: "协作", title: "智能体协作 / A2A", icon: Network },
   { id: "memory", label: "记忆", title: "记忆 / Memory", icon: BrainCircuit },
   { id: "evolution", label: "进化", title: "进化 / Evolution", icon: GitCompareArrows },
@@ -78,6 +81,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
           />
         )}
         {props.activeTab === "context" && <ContextInspector snapshot={props.snapshot} events={props.events} />}
+        {props.activeTab === "model" && <ModelInspector snapshot={props.snapshot} />}
         {props.activeTab === "a2a" && <A2AInspector events={props.events} snapshot={props.snapshot} />}
         {props.activeTab === "memory" && <MemoryInspector snapshot={props.snapshot} events={props.events} />}
         {props.activeTab === "evolution" && <EvolutionInspector snapshot={props.snapshot} />}
@@ -92,6 +96,111 @@ export function InspectorPanel(props: InspectorPanelProps) {
         )}
       </div>
     </aside>
+  );
+}
+
+function ModelInspector({ snapshot }: { snapshot: Snapshot | null }) {
+  const budget = snapshot?.model_budget;
+  const calls = snapshot?.model_calls ?? [];
+  if (!budget) {
+    return (
+      <InspectorEmpty
+        icon={Cpu}
+        title="尚无模型预算 / No model budget"
+        detail="运行创建后将显示持久额度与调用账本 / A Run exposes its durable budget and call ledger here."
+      />
+    );
+  }
+  const maxTokens = numberValue(budget.max_total_tokens);
+  const maxCost = numberValue(budget.max_cost_microusd);
+  const tokenPercent = modelBudgetPercent(budget.committed_tokens, maxTokens);
+  const costPercent = modelBudgetPercent(budget.committed_cost_microusd, maxCost);
+  return (
+    <>
+      <PanelHeading
+        eyebrow="先预约，再调用 / Reserve before transport"
+        title="模型治理 / Model Governance"
+        value={calls.length}
+      />
+      <section className="model-budget-summary">
+        <div className="model-budget-heading">
+          <div>
+            <Cpu size={17} aria-hidden="true" />
+            <span><strong>{snapshot?.run?.model_mode === "deepseek" ? "DeepSeek V4 Flash" : "脚本模型 / Scripted"}</strong><small>运行级额度 / Run-scoped authority</small></span>
+          </div>
+          <span className="estimate-badge">估算 / Estimate</span>
+        </div>
+        <BudgetLine
+          label="词元额度 / Token budget"
+          value={`${budget.committed_tokens.toLocaleString("zh-CN")} / ${maxTokens.toLocaleString("zh-CN")}`}
+          percent={tokenPercent}
+          tone="mint"
+        />
+        <BudgetLine
+          label="费用额度 / Cost budget"
+          value={`${formatEstimatedModelCost(budget.committed_cost_microusd)} / ${formatEstimatedModelCost(maxCost)}`}
+          percent={costPercent}
+          tone="amber"
+        />
+        <div className="metric-grid three model-budget-metrics">
+          <Metric label="已完成 / Completed" value={budget.completed_calls} tone="mint" />
+          <Metric label="在途 / In flight" value={budget.active_calls} tone="amber" />
+          <Metric label="未知 / Unknown" value={budget.unknown_calls} tone={budget.unknown_calls ? "amber" : "muted"} />
+        </div>
+        <div className="model-budget-remaining">
+          <span>剩余词元 / Tokens <strong>{budget.remaining_tokens.toLocaleString("zh-CN")}</strong></span>
+          <span>剩余费用 / Cost <strong>{formatEstimatedModelCost(budget.remaining_cost_microusd)}</strong></span>
+        </div>
+      </section>
+      {budget.unknown_calls > 0 && (
+        <div className="model-unknown-note">
+          <CircleAlert size={15} aria-hidden="true" />
+          <span>存在响应结果未知的调用：并发槽已释放，悲观额度继续保留 / Unknown transport outcome: slot released, pessimistic budget retained.</span>
+        </div>
+      )}
+      <div className="runtime-list-section model-call-section">
+        <div className="section-label">
+          <span>模型调用账本 / Model Call Ledger</span>
+          <span>{calls.length} 项 / items</span>
+        </div>
+        <div className="model-call-list">
+          {calls.length === 0 ? (
+            <div className="runtime-list-empty">尚无模型调用 / No model calls</div>
+          ) : calls.map((call) => {
+            const totalTokens = numberValue(call.total_tokens) || call.reserved_input_tokens + call.reserved_output_tokens;
+            const cost = numberValue(call.actual_cost_microusd) || call.reserved_cost_microusd;
+            return (
+              <div className={`model-call-row state-${call.state}`} key={call.call_id}>
+                <span className="model-call-icon"><CircleDollarSign size={14} aria-hidden="true" /></span>
+                <div>
+                  <strong>{agentLabel(call.agent_id)}</strong>
+                  <span>{call.model} · {totalTokens.toLocaleString("zh-CN")} tok</span>
+                  <code title={call.task_id}>{shortId(call.task_id, 20)}</code>
+                </div>
+                <div>
+                  <strong>{modelCallStateLabel(call.state)}</strong>
+                  <span>{formatEstimatedModelCost(cost)}</span>
+                  <span>{call.attempt_count} 次尝试 / attempts</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="authority-note">
+        <ShieldCheck size={15} aria-hidden="true" />
+        <span>第三方 API 无法保证恰好计费一次；本地按 Completion 幂等记账，未知结果悲观保留 / Provider billing is not exactly-once; local Completion accounting is idempotent and unknown outcomes remain reserved.</span>
+      </div>
+    </>
+  );
+}
+
+function BudgetLine({ label, value, percent, tone }: { label: string; value: string; percent: number; tone: "mint" | "amber" }) {
+  return (
+    <div className="budget-line">
+      <div><span>{label}</span><strong>{value}</strong></div>
+      <div className="budget-track"><span className={tone} style={{ width: `${percent}%` }} /></div>
+    </div>
   );
 }
 
@@ -744,6 +853,31 @@ function capabilityKindLabel(kind: string): string {
   if (kind === "mcp") return "远端工具 / MCP";
   if (kind === "skill") return "技能 / Skill";
   return "函数 / Function";
+}
+
+export function modelBudgetPercent(committed: number, maximum: number): number {
+  if (maximum <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((committed / maximum) * 100)));
+}
+
+export function formatEstimatedModelCost(microusd: number): string {
+  return `$${(Math.max(0, microusd) / 1_000_000).toFixed(6)}`;
+}
+
+function modelCallStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    reserved: "已预约 / Reserved",
+    in_flight: "调用中 / In flight",
+    completed: "已完成 / Completed",
+    failed: "已失败 / Failed",
+    unknown: "结果未知 / Unknown",
+  };
+  return labels[state] ?? statusLabel(state);
+}
+
+function numberValue(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function PipelineStep({ label, state }: { label: string; state: "pending" | "active" | "done" }) {
