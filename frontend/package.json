@@ -10,7 +10,7 @@
     "generate:api": "python ../work/export_control_plane_openapi.py --output openapi.json && openapi-typescript openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.25.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
