@@ -14,4 +14,10 @@ describe("Chinese-first control-room labels", () => {
     expect(toolLabel("research.source.open")).toBe("浏览器打开证据源 / research.source.open");
     expect(toolLabel("research.report.validate")).toBe("校验研究报告 / research.report.validate");
   });
+
+  it("labels the backup worker and lease terminal states", () => {
+    expect(agentLabel("scout-backup")).toBe("侦察备用 / Scout Backup");
+    expect(statusLabel("released")).toBe("已释放 / Released");
+    expect(statusLabel("expired")).toBe("已超时 / Expired");
+  });
 });

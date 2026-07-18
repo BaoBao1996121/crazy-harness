@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.3.0-dev"
+    "version": "0.4.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -397,6 +397,33 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "max_concurrency": {
+            "type": "integer",
+            "title": "Max Concurrency",
+            "default": 1
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          },
+          "active_assignment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Assignment Id"
           },
           "mailbox_pending": {
             "type": "integer",
@@ -978,6 +1005,99 @@
         ],
         "title": "KernelDecision"
       },
+      "LeaseView": {
+        "properties": {
+          "lease_id": {
+            "type": "string",
+            "title": "Lease Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "title": "Assignment Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "acquired_at": {
+            "type": "string",
+            "title": "Acquired At"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "renewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewed At"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          },
+          "expired_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "lease_id",
+          "assignment_id",
+          "run_id",
+          "task_id",
+          "agent_id",
+          "status",
+          "acquired_at",
+          "expires_at"
+        ],
+        "title": "LeaseView"
+      },
       "MemoryView": {
         "properties": {
           "candidate_id": {
@@ -1276,6 +1396,13 @@
             "type": "array",
             "title": "Assignments"
           },
+          "leases": {
+            "items": {
+              "$ref": "#/components/schemas/LeaseView"
+            },
+            "type": "array",
+            "title": "Leases"
+          },
           "contexts": {
             "items": {
               "$ref": "#/components/schemas/ContextView"
@@ -1320,6 +1447,7 @@
           "run",
           "agents",
           "assignments",
+          "leases",
           "contexts",
           "capability_manifests",
           "memories",

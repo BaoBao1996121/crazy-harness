@@ -246,6 +246,10 @@ Skill Loader 的 `max_skills=2000`、`max_skill_bytes=1_000_000`、`max_resource
 - A2A 1.0 Server/Client Adapter，接入一个独立进程 Remote Agent。
 - Single vs Team 同任务、同模型、同预算对照。
 
+实施状态（2026-07-18）：第一纵切已完成。Resident Demo 的业务链已移出 Runtime，成为持久化 `TeamContract` 声明式 DAG；`CapabilitySupervisorPolicy` 只读取公共 TeamView、AgentCard、状态、负载和历史 Attempt，提交 `PlanPatch` Candidate。`ControlKernel` 逐项校验 Revision、持久 Contract、依赖、目标、能力、Agent 状态、Attempt、Lease 与并发上限，获准后才产生 Assignment、Lease 和 Mailbox Delivery。Lease 已支持 Acquire、Heartbeat/Renew、Deadline Expire、Agent Degrade、备用 Scout 重派和旧 Delivery fencing；EventLog 可重建相同 Projection。真实 HTTP Golden Run `run_f6a684e9f769` 以 167 条事件完成 evidence -> artifact -> review，并通过 CompletionGate、Dream、Memory Admission 与 Offline Evolution Replay。
+
+尚未完成：Worker 仍使用 Scripted 策略而非各自 canonical AgentLoop；Scheduler 当前单消费者，只证明多个 Assignment 可同时 active，不证明真正并行吞吐；Remote A2A Adapter、跨进程通知和 Single-vs-Team 同预算收益评测仍待后续纵切。Lease 使用 at-least-once 恢复语义，不能宣称分布式 exactly-once；30 秒 Lease 与 `max_parallel_assignments=1` 是初始演示值，待真实任务 Eval 调优。
+
 准出：进程被 Kill 后没有丢任务和重复副作用；Team 至少在一个 Golden Task 上带来可测收益，否则默认仍用 Single 模式。
 
 ### Phase 4：Context、Memory 与 Dream，2 周

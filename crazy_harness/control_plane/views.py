@@ -30,6 +30,9 @@ class AgentView(_View):
     role: str
     capabilities: list[str] = Field(default_factory=list)
     status: str
+    max_concurrency: int = 1
+    last_heartbeat_at: str | None = None
+    active_assignment_id: str | None = None
     mailbox_pending: int = 0
     active_run_id: str | None = None
     last_error: str | None = None
@@ -43,6 +46,21 @@ class AssignmentView(_View):
     goal: str
     exit_criteria: list[str] = Field(default_factory=list)
     status: str
+
+
+class LeaseView(_View):
+    lease_id: str
+    assignment_id: str
+    run_id: str
+    task_id: str
+    agent_id: str
+    status: str
+    stage_id: str | None = None
+    acquired_at: str
+    expires_at: str
+    renewed_at: str | None = None
+    released_at: str | None = None
+    expired_at: str | None = None
 
 
 class ContextView(_View):
@@ -118,6 +136,7 @@ class SnapshotView(BaseModel):
     run: RunView | None
     agents: list[AgentView]
     assignments: list[AssignmentView]
+    leases: list[LeaseView]
     contexts: list[ContextView]
     capability_manifests: list[CapabilityManifestView]
     memories: list[MemoryView]

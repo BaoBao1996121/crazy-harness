@@ -13,5 +13,9 @@ parser.add_argument("--output", type=Path, required=True)
 args = parser.parse_args()
 with tempfile.TemporaryDirectory() as temp_dir:
     schema = create_app(Path(temp_dir), background=False).openapi()
-args.output.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+args.output.write_text(
+    json.dumps(schema, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+    newline="\n",
+)
 print(f"openapi={args.output}")

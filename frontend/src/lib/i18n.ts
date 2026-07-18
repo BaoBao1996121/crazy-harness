@@ -1,6 +1,7 @@
 const AGENT_LABELS: Record<string, string> = {
   coordinator: "总控 / Coordinator",
   scout: "侦察 / Scout",
+  "scout-backup": "侦察备用 / Scout Backup",
   builder: "构建 / Builder",
   reviewer: "审查 / Reviewer",
   generalist: "通用执行 / Generalist",
@@ -21,6 +22,9 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "失败 / Failed",
   completed: "已完成 / Completed",
   active: "已生效 / Active",
+  released: "已释放 / Released",
+  expired: "已超时 / Expired",
+  stale: "已隔离 / Stale",
   candidate: "候选 / Candidate",
   pending: "待处理 / Pending",
   approved: "已批准 / Approved",

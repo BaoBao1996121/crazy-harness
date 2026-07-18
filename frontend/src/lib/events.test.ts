@@ -49,4 +49,19 @@ describe("timeline event vocabulary", () => {
     expect(meta.family).toBe("context");
     expect(meta.boundary).toBe("control");
   });
+
+  it("explains lease lifecycle and stale fencing in Chinese-first labels", () => {
+    expect(eventMeta("assignment.lease.acquired").label).toBe("租约获取 / Lease acquired");
+    expect(eventMeta("assignment.lease.expired").label).toBe("租约超时 / Lease expired");
+    expect(eventMeta("assignment.delivery.stale").label).toBe("过期投递已隔离 / Stale delivery fenced");
+    expect(eventMeta("assignment.lease.expired").tone).toBe("danger");
+    expect(eventMeta("assignment.delivery.stale").important).toBe(true);
+  });
+
+  it("keeps heartbeat and renewal noise out of focus mode", () => {
+    const input = [record(1, "runtime.agent.heartbeat"), record(2, "assignment.lease.renewed")];
+
+    expect(selectVisibleEvents(input, false)).toEqual([]);
+    expect(selectVisibleEvents(input, true)).toEqual(input);
+  });
 });

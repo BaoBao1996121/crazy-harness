@@ -244,6 +244,7 @@ class SQLiteEventStore:
             "runs": [],
             "agents": [],
             "assignments": [],
+            "leases": [],
             "contexts": [],
             "capability_manifests": [],
             "memories": [],
@@ -254,6 +255,7 @@ class SQLiteEventStore:
             "run": "runs",
             "agent": "agents",
             "assignment": "assignments",
+            "lease": "leases",
             "context": "contexts",
             "capability_manifest": "capability_manifests",
             "memory": "memories",
@@ -335,6 +337,7 @@ class SQLiteEventStore:
                     "role": event.payload.get("role", agent_id.title()),
                     "capabilities": event.payload.get("capabilities", []),
                     "status": "idle",
+                    "max_concurrency": int(event.payload.get("max_concurrency", 1)),
                     "mailbox_pending": 0,
                     "updated_at": event.created_at.isoformat(),
                 },
@@ -355,7 +358,7 @@ class SQLiteEventStore:
                 updated_at=event.created_at.isoformat(),
             )
             self._save_projection(connection, "assignment", assignment_id, state, seq)
-        elif event.type.startswith("assignment."):
+        elif event.type.startswith("assignment.") and not event.type.startswith("assignment.lease."):
             assignment_id = event.payload.get("assignment_id")
             if assignment_id:
                 state = self._load_projection(connection, "assignment", str(assignment_id))
@@ -363,6 +366,9 @@ class SQLiteEventStore:
                     state["status"] = event.type.rsplit(".", 1)[-1]
                     state["updated_at"] = event.created_at.isoformat()
                     self._save_projection(connection, "assignment", str(assignment_id), state, seq)
+
+        if event.type.startswith("assignment.lease."):
+            self._project_lease(connection, event, seq)
 
         if event.type in {"context.compiled", "context.manifest.compiled"}:
             agent_id = str(event.payload["agent_id"])
@@ -407,11 +413,47 @@ class SQLiteEventStore:
         status = status_by_type.get(event.type)
         if status:
             state["status"] = status
-        state["active_run_id"] = event.run_id if status in {"busy", "waiting", "degraded"} else None
+            state["active_run_id"] = (
+                event.run_id if status in {"busy", "waiting", "degraded"} else None
+            )
+            if status in {"idle", "offline"}:
+                state["active_assignment_id"] = None
         if event.type == "runtime.agent.crashed":
             state["last_error"] = event.payload.get("reason", "injected crash")
+        if event.type == "runtime.agent.heartbeat":
+            state["last_heartbeat_at"] = event.created_at.isoformat()
+            state["active_assignment_id"] = event.payload.get("assignment_id")
         state["updated_at"] = event.created_at.isoformat()
         self._save_projection(connection, "agent", str(agent_id), state, seq)
+
+    def _project_lease(self, connection: sqlite3.Connection, event: Event, seq: int) -> None:
+        assignment_id = event.payload.get("assignment_id")
+        if not assignment_id:
+            return
+        entity_id = str(assignment_id)
+        state = self._load_projection(connection, "lease", entity_id) or {
+            "assignment_id": entity_id,
+            "run_id": event.run_id,
+            "task_id": event.task_id,
+        }
+        state.update(event.payload)
+        status_by_type = {
+            "assignment.lease.acquired": "active",
+            "assignment.lease.renewed": "active",
+            "assignment.lease.released": "released",
+            "assignment.lease.expired": "expired",
+        }
+        state["status"] = status_by_type.get(event.type, state.get("status", "active"))
+        if event.type == "assignment.lease.acquired":
+            state.setdefault("acquired_at", event.created_at.isoformat())
+        elif event.type == "assignment.lease.renewed":
+            state.setdefault("renewed_at", event.created_at.isoformat())
+        elif event.type == "assignment.lease.released":
+            state.setdefault("released_at", event.created_at.isoformat())
+        elif event.type == "assignment.lease.expired":
+            state.setdefault("expired_at", event.created_at.isoformat())
+        state["updated_at"] = event.created_at.isoformat()
+        self._save_projection(connection, "lease", entity_id, state, seq)
 
     def _project_mailbox(self, connection: sqlite3.Connection, event: Event, seq: int) -> None:
         agent_id = event.payload.get("mailbox_id")

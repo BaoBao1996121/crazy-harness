@@ -62,6 +62,41 @@ def test_event_projection_can_be_rebuilt_from_the_log(tmp_path):
     assert agent["status"] == "busy"
 
 
+def test_idle_agent_projection_clears_the_completed_active_assignment(tmp_path):
+    store = SQLiteEventStore(tmp_path / "control.db")
+    store.append(
+        event(
+            "agent.registered",
+            event_id="evt-agent",
+            payload={
+                "agent_id": "scout",
+                "role": "Scout",
+                "capabilities": ["evidence.collect"],
+            },
+        )
+    )
+    store.append(
+        event(
+            "runtime.agent.heartbeat",
+            event_id="evt-heartbeat",
+            payload={"agent_id": "scout", "assignment_id": "assignment-1"},
+        )
+    )
+    heartbeat_at = store.snapshot()["agents"][0]["last_heartbeat_at"]
+    store.append(
+        event(
+            "runtime.agent.idle",
+            event_id="evt-idle",
+            payload={"agent_id": "scout"},
+        )
+    )
+
+    agent = store.snapshot()["agents"][0]
+    assert agent["status"] == "idle"
+    assert agent["active_assignment_id"] is None
+    assert agent["last_heartbeat_at"] == heartbeat_at
+
+
 def test_capability_manifest_projection_survives_rebuild(tmp_path):
     store = SQLiteEventStore(tmp_path / "control.db")
     store.append(event("run.created", event_id="evt-run", payload={"title": "Capabilities"}))
