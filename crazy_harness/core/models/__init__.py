@@ -1,6 +1,7 @@
 from crazy_harness.core.models.providers import (
     DeepSeekOpenAIProvider,
     FakeModelProvider,
+    ModelCallAuthority,
     ModelMessage,
     ModelProvider,
     ModelResponse,
@@ -10,6 +11,7 @@ from crazy_harness.core.models.providers import (
 __all__ = [
     "DeepSeekOpenAIProvider",
     "FakeModelProvider",
+    "ModelCallAuthority",
     "ModelMessage",
     "ModelProvider",
     "ModelResponse",

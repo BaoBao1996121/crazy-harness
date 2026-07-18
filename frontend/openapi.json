@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.6.0-dev"
+    "version": "0.7.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -1274,6 +1274,195 @@
         ],
         "title": "MemoryView"
       },
+      "ModelBudgetConfig": {
+        "properties": {
+          "max_total_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Total Tokens",
+            "default": 250000
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              }
+            ],
+            "title": "Max Cost Usd",
+            "default": "0.10"
+          },
+          "max_concurrent_calls": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Concurrent Calls",
+            "default": 2
+          },
+          "max_output_tokens_per_call": {
+            "type": "integer",
+            "maximum": 384000.0,
+            "minimum": 1.0,
+            "title": "Max Output Tokens Per Call",
+            "default": 4096
+          },
+          "max_retries_per_call": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Max Retries Per Call",
+            "default": 2
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ModelBudgetConfig"
+      },
+      "ModelBudgetView": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "active_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Active Calls"
+          },
+          "completed_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completed Calls"
+          },
+          "unknown_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unknown Calls"
+          },
+          "spent_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Spent Tokens"
+          },
+          "committed_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Committed Tokens"
+          },
+          "remaining_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Remaining Tokens"
+          },
+          "estimated_spent_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Estimated Spent Microusd"
+          },
+          "committed_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Committed Cost Microusd"
+          },
+          "remaining_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Remaining Cost Microusd"
+          },
+          "cost_kind": {
+            "type": "string",
+            "title": "Cost Kind"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "run_id",
+          "active_calls",
+          "completed_calls",
+          "unknown_calls",
+          "spent_tokens",
+          "committed_tokens",
+          "remaining_tokens",
+          "estimated_spent_microusd",
+          "committed_cost_microusd",
+          "remaining_cost_microusd",
+          "cost_kind"
+        ],
+        "title": "ModelBudgetView"
+      },
+      "ModelCallView": {
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "title": "Call Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Attempt Count"
+          },
+          "reserved_input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Input Tokens"
+          },
+          "reserved_output_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Output Tokens"
+          },
+          "reserved_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Cost Microusd"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "call_id",
+          "run_id",
+          "task_id",
+          "agent_id",
+          "provider",
+          "model",
+          "state",
+          "attempt_count",
+          "reserved_input_tokens",
+          "reserved_output_tokens",
+          "reserved_cost_microusd"
+        ],
+        "title": "ModelCallView"
+      },
       "PeerProbeRequest": {
         "properties": {
           "run_id": {
@@ -1621,6 +1810,23 @@
             "type": "array",
             "title": "Work Claims"
           },
+          "model_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelBudgetView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ModelCallView"
+            },
+            "type": "array",
+            "title": "Model Calls"
+          },
           "runtime": {
             "$ref": "#/components/schemas/RuntimeView"
           }
@@ -1638,6 +1844,8 @@
           "dream_jobs",
           "queued_deliveries",
           "work_claims",
+          "model_budget",
+          "model_calls",
           "runtime"
         ],
         "title": "SnapshotView"
@@ -1689,6 +1897,9 @@
               }
             ],
             "title": "Task Pack"
+          },
+          "model_budget": {
+            "$ref": "#/components/schemas/ModelBudgetConfig"
           }
         },
         "additionalProperties": false,

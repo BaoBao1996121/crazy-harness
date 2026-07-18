@@ -161,6 +161,33 @@ def test_supervisor_requests_completion_only_after_every_stage_is_complete():
     assert patch.assignments == ()
 
 
+def test_supervisor_blocks_stage_after_assignment_attempt_budget_is_exhausted():
+    contract = TeamContract(
+        contract_id="bounded-retry-demo",
+        max_stage_attempts=2,
+        stages=(
+            TeamStageSpec(
+                stage_id="evidence",
+                result_kind="evidence",
+                goal="collect facts",
+                required_capabilities=frozenset({"evidence.collect"}),
+            ),
+        ),
+    )
+
+    patch = CapabilitySupervisorPolicy().propose(
+        contract,
+        context(
+            cards=(card("collector", "evidence.collect"),),
+            attempts={"evidence": 2},
+        ),
+    )
+
+    assert patch.assignments == ()
+    assert patch.blocked_reason == "stage_attempt_budget_exhausted:evidence"
+    assert patch.stages[0].state == "blocked"
+
+
 def test_team_contract_rejects_dependency_cycles():
     with pytest.raises(ValueError, match="cycle"):
         TeamContract(

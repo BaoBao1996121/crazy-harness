@@ -514,6 +514,88 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ModelBudgetConfig */
+        ModelBudgetConfig: {
+            /**
+             * Max Total Tokens
+             * @default 250000
+             */
+            max_total_tokens: number;
+            /**
+             * Max Cost Usd
+             * @default 0.10
+             */
+            max_cost_usd: number | string;
+            /**
+             * Max Concurrent Calls
+             * @default 2
+             */
+            max_concurrent_calls: number;
+            /**
+             * Max Output Tokens Per Call
+             * @default 4096
+             */
+            max_output_tokens_per_call: number;
+            /**
+             * Max Retries Per Call
+             * @default 2
+             */
+            max_retries_per_call: number;
+        };
+        /** ModelBudgetView */
+        ModelBudgetView: {
+            /** Run Id */
+            run_id: string;
+            /** Active Calls */
+            active_calls: number;
+            /** Completed Calls */
+            completed_calls: number;
+            /** Unknown Calls */
+            unknown_calls: number;
+            /** Spent Tokens */
+            spent_tokens: number;
+            /** Committed Tokens */
+            committed_tokens: number;
+            /** Remaining Tokens */
+            remaining_tokens: number;
+            /** Estimated Spent Microusd */
+            estimated_spent_microusd: number;
+            /** Committed Cost Microusd */
+            committed_cost_microusd: number;
+            /** Remaining Cost Microusd */
+            remaining_cost_microusd: number;
+            /** Cost Kind */
+            cost_kind: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ModelCallView */
+        ModelCallView: {
+            /** Call Id */
+            call_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Agent Id */
+            agent_id: string;
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** State */
+            state: string;
+            /** Attempt Count */
+            attempt_count: number;
+            /** Reserved Input Tokens */
+            reserved_input_tokens: number;
+            /** Reserved Output Tokens */
+            reserved_output_tokens: number;
+            /** Reserved Cost Microusd */
+            reserved_cost_microusd: number;
+        } & {
+            [key: string]: unknown;
+        };
         /** PeerProbeRequest */
         PeerProbeRequest: {
             /** Run Id */
@@ -645,6 +727,9 @@ export interface components {
             queued_deliveries: components["schemas"]["QueuedDeliveryView"][];
             /** Work Claims */
             work_claims: components["schemas"]["WorkClaimView"][];
+            model_budget: components["schemas"]["ModelBudgetView"] | null;
+            /** Model Calls */
+            model_calls: components["schemas"]["ModelCallView"][];
             runtime: components["schemas"]["RuntimeView"];
         };
         /** TaskRequest */
@@ -667,6 +752,7 @@ export interface components {
             execution_mode: "team" | "single";
             /** Task Pack */
             task_pack?: ("resident-demo" | "repo-maintainer" | "evidence-research") | null;
+            model_budget?: components["schemas"]["ModelBudgetConfig"];
         };
         /** ValidationError */
         ValidationError: {

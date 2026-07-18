@@ -28,7 +28,7 @@ from crazy_harness.core.capabilities import (
 )
 from crazy_harness.core.context.builder import ContextBuilder
 from crazy_harness.core.events import Event, EventLog
-from crazy_harness.core.models import ModelMessage, ModelProvider
+from crazy_harness.core.models import ModelCallAuthority, ModelMessage, ModelProvider
 from crazy_harness.core.prompts import PromptPack
 from crazy_harness.core.skills import active_skill_activations
 from crazy_harness.core.tools import ToolCall, ToolRegistry
@@ -89,6 +89,7 @@ class AgentLoop:
     message_handler: MessageHandler | None = None
     capability_compiler: CapabilityCompiler | None = None
     capability_always_include: tuple[str, ...] = ()
+    model_call_authority: ModelCallAuthority | None = None
 
     def __post_init__(self) -> None:
         if self.tool_pipeline is not None and self.policy_context is None:
@@ -131,7 +132,19 @@ class AgentLoop:
         response_event = self._last_of_type(turn_events, "model.completed")
         command_event = self._last_of_type(turn_events, "agent.command.validated")
         capability_event = self._last_of_type(turn_events, "capability.manifest.compiled")
+        request_event = self._last_of_type(turn_events, "model.requested")
         response_recovered = response_event is not None
+
+        # 旧请求已经开始传输却没有持久响应时，结果属于 UNKNOWN；绝不能另开
+        # 一个 Turn 盲目重采样。只有“已预约但 Attempt 尚未开始”才可安全释放后重试。
+        if (
+            response_event is None
+            and request_event is not None
+            and self.model_call_authority is not None
+        ):
+            self.model_call_authority.recover_unresolved(
+                request_event=request_event
+            )
 
         # 没有可复用响应，才创建新 turn、编译上下文并真正调用模型。
         if response_event is None:
@@ -180,24 +193,67 @@ class AgentLoop:
                 },
                 causation_id=request_trigger.id,
             )
+            request_event = requested
 
             # model.completed 是模型响应的持久边界：它落盘后即使进程崩溃也应复用。
-            response = self.model.complete(
-                messages,
-                tools=self._tool_schemas(self._disclosed_names(capability_event)),
-                response_schema=AgentAction.model_json_schema(),
+            tool_schemas = self._tool_schemas(
+                self._disclosed_names(capability_event)
             )
+            if self.model_call_authority is None:
+                response = self.model.complete(
+                    messages,
+                    tools=tool_schemas,
+                    response_schema=AgentAction.model_json_schema(),
+                )
+            else:
+                response = self.model_call_authority.complete(
+                    request_event=requested,
+                    provider=self.model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    response_schema=AgentAction.model_json_schema(),
+                )
             response_event = self._append(
                 "model.completed",
                 {
                     "turn_id": turn_id,
                     "content": response.content,
-                    "raw": response.raw,
                     "usage": response.usage,
+                    **response.audit_payload(),
                 },
                 causation_id=requested.id,
             )
+            if self.model_call_authority is not None:
+                self.model_call_authority.reconcile(
+                    request_event=requested,
+                    completion_event=response_event,
+                )
             self._fault("after_model_persisted")
+
+        if (
+            response_recovered
+            and self.model_call_authority is not None
+            and request_event is not None
+        ):
+            self.model_call_authority.reconcile(
+                request_event=request_event,
+                completion_event=response_event,
+            )
+
+        finish_reason = response_event.payload.get("finish_reason")
+        if finish_reason not in {None, "stop", "tool_calls"}:
+            self._phase(LoopPhase.FAILED, turn_id)
+            self._append(
+                "model.validation_failed",
+                {
+                    "turn_id": turn_id,
+                    "error": f"provider returned incomplete finish_reason: {finish_reason}",
+                    "finish_reason": finish_reason,
+                    "raw_content": response_event.payload.get("content", ""),
+                },
+                causation_id=response_event.id,
+            )
+            return
 
         if response_recovered and self._last_of_type(turn_events, "model.response.reused") is None:
             self._append(
@@ -911,7 +967,7 @@ class AgentLoop:
         ]
 
     def _recoverable_turn(self, events: list[Event]) -> tuple[str, list[Event]]:
-        """寻找最近的半成品回合：已有模型响应，但还没有本轮结果事件。"""
+        """寻找最近的半成品回合：已有请求或响应，但还没有本轮结果事件。"""
 
         # 倒序检查 turn，优先恢复最新回合；完整回合不会被重复执行。
         turn_ids = sorted(
@@ -921,11 +977,13 @@ class AgentLoop:
         )
         for turn_id in turn_ids:
             turn_events = [event for event in events if str(event.payload.get("turn_id")) == turn_id]
+            has_request = self._last_of_type(turn_events, "model.requested") is not None
             has_response = self._last_of_type(turn_events, "model.completed") is not None
             completed = any(event.type in _TURN_COMPLETED_EVENTS for event in turn_events)
 
-            # 典型场景：model.completed 已 fsync，进程在 command 校验或执行前崩溃。
-            if has_response and not completed:
+            # response 可直接复用；只有 request 时交给 ModelCallAuthority 判定是否
+            # 从未传输、已知失败或处于不可盲目重采样的 UNKNOWN 窗口。
+            if (has_request or has_response) and not completed:
                 return turn_id, turn_events
         return "", []
 
