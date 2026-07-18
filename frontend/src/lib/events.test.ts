@@ -64,4 +64,41 @@ describe("timeline event vocabulary", () => {
     expect(selectVisibleEvents(input, false)).toEqual([]);
     expect(selectVisibleEvents(input, true)).toEqual(input);
   });
+
+  it("labels the child AgentRun lifecycle and result promotion explicitly", () => {
+    expect(eventMeta("agent.run.created").label).toBe("子 AgentRun 创建 / Child AgentRun created");
+    expect(eventMeta("agent.waiting").label).toBe("Agent 等待外部事件 / Agent waiting");
+    expect(eventMeta("a2a.message.sent").label).toBe("A2A 消息已发出 / A2A message sent");
+    expect(eventMeta("agent.result.promoted").label).toBe("结果晋升为团队事实 / Result promoted");
+    expect(eventMeta("agent.result.rejected").label).toBe("结果晋升被拒 / Result promotion rejected");
+    expect(eventMeta("agent.result.rejected").tone).toBe("danger");
+  });
+
+  it("keeps AgentRun milestones and hides per-turn mechanics in focus mode", () => {
+    const input = [
+      record(1, "loop.phase.changed"),
+      record(2, "runtime.turn.ready"),
+      record(3, "agent.run.created"),
+      record(4, "agent.waiting"),
+      record(5, "a2a.message.sent"),
+      record(6, "agent.result.promoted"),
+    ];
+
+    expect(selectVisibleEvents(input, false).map((item) => item.cursor)).toEqual([3, 4, 5, 6]);
+    expect(selectVisibleEvents(input, true)).toEqual(input);
+  });
+
+  it("labels scheduler recovery and dead-letter facts in Chinese first", () => {
+    expect(eventMeta("runtime.scheduler.cycle.failed").label).toBe(
+      "调度周期故障，正在恢复 / Scheduler cycle recovering",
+    );
+    expect(eventMeta("mailbox.delivery.dead_lettered").label).toBe(
+      "邮箱消息进入死信 / Delivery dead-lettered",
+    );
+    expect(eventMeta("a2a.peer.failure.unroutable").label).toBe(
+      "同伴失败无法路由 / Peer failure unroutable",
+    );
+    expect(eventMeta("mailbox.delivery.dead_lettered").tone).toBe("danger");
+    expect(eventMeta("mailbox.delivery.dead_lettered").important).toBe(true);
+  });
 });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from crazy_harness.control_plane.kernel import (
     KernelDecision,
 )
 from crazy_harness.control_plane.store import SQLiteEventStore
+from crazy_harness.control_plane.team_workers import TeamWorkerEngine
 from crazy_harness.core.a2a.coordinator import AgentStatus
 from crazy_harness.core.a2a.messages import AgentCard
 from crazy_harness.core.a2a.orchestration import (
@@ -31,7 +33,11 @@ from crazy_harness.core.a2a.orchestration import (
 from crazy_harness.core.agents import AgentLoop, AssignmentContract
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.events import Event
-from crazy_harness.core.models import DeepSeekOpenAIProvider, FakeModelProvider, ModelProvider
+from crazy_harness.core.models import (
+    DeepSeekOpenAIProvider,
+    FakeModelProvider,
+    ModelProvider,
+)
 from crazy_harness.core.runtime import DurableMailbox
 from crazy_harness.core.runtime.mailbox import Delivery
 from crazy_harness.taskpacks import (
@@ -49,7 +55,9 @@ class TaskRequest(BaseModel):
     brief: str = Field(min_length=1, max_length=4000)
     model_mode: Literal["scripted", "deepseek"] = "scripted"
     execution_mode: Literal["team", "single"] = "team"
-    task_pack: Literal["resident-demo", "repo-maintainer", "evidence-research"] | None = None
+    task_pack: (
+        Literal["resident-demo", "repo-maintainer", "evidence-research"] | None
+    ) = None
 
 
 class RunCreated(BaseModel):
@@ -65,7 +73,11 @@ ModelFactory = Callable[[str], ModelProvider]
 class ResidentScheduler:
     """A tiny always-on dispatcher; durable mailboxes remain the source of pending work."""
 
-    def __init__(self, store: SQLiteEventStore, fault_controller: FaultController) -> None:
+    MAX_DELIVERY_FAILURES = 3
+
+    def __init__(
+        self, store: SQLiteEventStore, fault_controller: FaultController
+    ) -> None:
         self.store = store
         self.fault_controller = fault_controller
         self._workers: dict[str, tuple[DurableMailbox, Handler]] = {}
@@ -74,7 +86,9 @@ class ResidentScheduler:
         self._consumed_generation = 0
         self._run_lock = threading.Lock()
 
-    def register(self, worker_id: str, mailbox: DurableMailbox, handler: Handler) -> None:
+    def register(
+        self, worker_id: str, mailbox: DurableMailbox, handler: Handler
+    ) -> None:
         if worker_id in self._workers:
             raise ValueError(f"worker already registered: {worker_id}")
         self._workers[worker_id] = (mailbox, handler)
@@ -115,6 +129,11 @@ class ResidentScheduler:
         if selected is None:
             return False
         worker_id, mailbox, handler, delivery = selected
+        dead_letter = self._dead_letter(delivery.delivery_id)
+        if dead_letter is not None:
+            self._fail_running_run_for_dead_letter(delivery, dead_letter)
+            mailbox.ack(delivery.delivery_id)
+            return True
         self._append(
             delivery.event,
             "runtime.agent.busy",
@@ -136,6 +155,14 @@ class ResidentScheduler:
                 },
             )
             return True
+        except Exception as exc:
+            self._handle_unexpected_failure(
+                worker_id=worker_id,
+                mailbox=mailbox,
+                delivery=delivery,
+                error=exc,
+            )
+            return True
 
         mailbox.ack(delivery.delivery_id)
         self._append(
@@ -150,15 +177,168 @@ class ResidentScheduler:
         )
         return True
 
-    def _append(self, identity: Event, event_type: str, payload: dict) -> Event:
+    def _handle_unexpected_failure(
+        self,
+        *,
+        worker_id: str,
+        mailbox: DurableMailbox,
+        delivery: Delivery,
+        error: Exception,
+    ) -> None:
+        attempts = 1 + sum(
+            event.type == "runtime.agent.crashed"
+            and event.payload.get("delivery_id") == delivery.delivery_id
+            and event.payload.get("failure_class") == "unexpected_exception"
+            for event in self.store.read_all()
+        )
+        reason = f"{type(error).__name__}: {error}"
+        crashed = self._append(
+            delivery.event,
+            "runtime.agent.crashed",
+            {
+                "agent_id": worker_id,
+                "delivery_id": delivery.delivery_id,
+                "reason": reason,
+                "failure_class": "unexpected_exception",
+                "attempt": attempts,
+                "redelivery": attempts < self.MAX_DELIVERY_FAILURES,
+            },
+            key=f"unexpected-crash:{delivery.delivery_id}:{attempts}",
+        )
+        if attempts < self.MAX_DELIVERY_FAILURES:
+            return
+        dead_letter = self._append(
+            delivery.event,
+            "mailbox.delivery.dead_lettered",
+            {
+                "mailbox_id": worker_id,
+                "agent_id": worker_id,
+                "delivery_id": delivery.delivery_id,
+                "delivery_event_id": delivery.event.id,
+                "attempts": attempts,
+                "reason": reason,
+            },
+            key=f"dead-letter:{delivery.delivery_id}",
+            causation_id=crashed.id,
+        )
+        self._append(
+            delivery.event,
+            "runtime.agent.degraded",
+            {
+                "agent_id": worker_id,
+                "delivery_id": delivery.delivery_id,
+                "reason": "delivery_dead_lettered",
+            },
+            key=f"dead-letter-degraded:{delivery.delivery_id}",
+            causation_id=crashed.id,
+        )
+        self._fail_running_run_for_dead_letter(delivery, dead_letter)
+        mailbox.ack(delivery.delivery_id)
+
+    def _dead_letter(self, delivery_id: str) -> Event | None:
+        return next(
+            (
+                event
+                for event in reversed(self.store.read_all())
+                if event.type == "mailbox.delivery.dead_lettered"
+                and event.payload.get("delivery_id") == delivery_id
+            ),
+            None,
+        )
+
+    def _fail_running_run_for_dead_letter(
+        self, delivery: Delivery, dead_letter: Event
+    ) -> Event | None:
+        run = self.store.projection("run", delivery.event.run_id)
+        if run is None or run.get("status") != "running":
+            return None
+        root_task_id = str(run.get("task_id") or delivery.event.task_id)
+        snapshot = self.store.snapshot(run_id=delivery.event.run_id)
+        active_leases = [
+            lease
+            for lease in snapshot["leases"]
+            if lease.get("status") == "active"
+        ]
+        for lease in active_leases:
+            assignment_id = str(lease["assignment_id"])
+            assignment = self.store.projection("assignment", assignment_id)
+            if assignment is not None and assignment.get("status") not in {
+                "succeeded",
+                "completed",
+                "failed",
+                "expired",
+            }:
+                self._append(
+                    delivery.event,
+                    "assignment.failed",
+                    {
+                        "assignment_id": assignment_id,
+                        "agent_id": lease.get("agent_id"),
+                        "reason": "delivery_dead_lettered",
+                        "dead_letter_event_id": dead_letter.id,
+                    },
+                    key=(
+                        f"dead-letter-assignment-failed:"
+                        f"{delivery.delivery_id}:{assignment_id}"
+                    ),
+                    causation_id=dead_letter.id,
+                    task_id=root_task_id,
+                )
+            self._append(
+                delivery.event,
+                "assignment.lease.released",
+                {
+                    "lease_id": lease.get("lease_id", f"lease:{assignment_id}"),
+                    "assignment_id": assignment_id,
+                    "stage_id": lease.get("stage_id"),
+                    "agent_id": lease.get("agent_id"),
+                    "reason": "run_failed_after_delivery_dead_letter",
+                    "dead_letter_event_id": dead_letter.id,
+                },
+                key=(
+                    f"dead-letter-lease-released:"
+                    f"{delivery.delivery_id}:{assignment_id}"
+                ),
+                causation_id=dead_letter.id,
+                task_id=root_task_id,
+            )
+        return self._append(
+            delivery.event,
+            "run.failed",
+            {
+                "reason": "delivery_dead_lettered",
+                "failure": str(dead_letter.payload.get("reason", "unknown failure")),
+                "delivery_id": delivery.delivery_id,
+                "dead_letter_event_id": dead_letter.id,
+            },
+            key=f"dead-letter-run-failed:{delivery.delivery_id}",
+            causation_id=dead_letter.id,
+            task_id=root_task_id,
+        )
+
+    def _append(
+        self,
+        identity: Event,
+        event_type: str,
+        payload: dict,
+        *,
+        key: str | None = None,
+        causation_id: str | None = None,
+        task_id: str | None = None,
+    ) -> Event:
         return self.store.append(
             Event(
+                id=(
+                    str(uuid5(NAMESPACE_URL, f"crazy:scheduler:{identity.run_id}:{key}"))
+                    if key is not None
+                    else str(uuid4())
+                ),
                 run_id=identity.run_id,
-                task_id=identity.task_id,
+                task_id=task_id or identity.task_id,
                 type=event_type,
                 source="runtime.scheduler",
                 payload=payload,
-                causation_id=identity.id,
+                causation_id=causation_id or identity.id,
             )
         )
 
@@ -166,13 +346,38 @@ class ResidentScheduler:
 class ResidentRuntime:
     """Cohesive resident runtime used by the API, Control Room, and learning tests."""
 
+    SCHEDULER_RECOVERY_DELAY_SECONDS = 0.05
+    SCHEDULER_FAILURE_BUFFER_LIMIT = 100
+
     AGENTS = (
-        ("coordinator", "Coordinator / 总控", ["orchestration.plan", "completion.gate"]),
+        (
+            "coordinator",
+            "Coordinator / 总控",
+            ["orchestration.plan", "completion.gate"],
+        ),
         ("scout", "Scout / 侦察", ["evidence.collect", "peer.respond"]),
-        ("scout-backup", "Scout Backup / 侦察备用", ["evidence.collect", "peer.respond"]),
+        (
+            "scout-backup",
+            "Scout Backup / 侦察备用",
+            ["evidence.collect", "peer.respond"],
+        ),
         ("builder", "Builder / 构建", ["artifact.compose", "peer.request"]),
-        ("reviewer", "Reviewer / 审查", ["artifact.review", "evidence.verify"]),
-        ("generalist", "Generalist / 通用执行", ["repo.inspect", "repo.edit", "test.verify", "research.browse", "research.cite"]),
+        (
+            "reviewer",
+            "Reviewer / 审查",
+            ["artifact.review", "evidence.verify", "peer.respond"],
+        ),
+        (
+            "generalist",
+            "Generalist / 通用执行",
+            [
+                "repo.inspect",
+                "repo.edit",
+                "test.verify",
+                "research.browse",
+                "research.cite",
+            ],
+        ),
     )
 
     def __init__(
@@ -204,33 +409,63 @@ class ResidentRuntime:
         self._single_loops: dict[str, AgentLoop] = {}
         self.mailboxes: dict[str, DurableMailbox] = {
             worker_id: DurableMailbox(worker_id, self.store)
-            for worker_id in [*(agent[0] for agent in self.AGENTS), "dream.worker", "context.evolver"]
+            for worker_id in [
+                *(agent[0] for agent in self.AGENTS),
+                "dream.worker",
+                "context.evolver",
+            ]
         }
+        self.team_workers = TeamWorkerEngine(
+            data_dir=self.data_dir,
+            store=self.store,
+            artifacts=self.artifacts,
+            kernel=self.kernel,
+            task_pack=self.team_pack,
+            deliver=lambda receiver, event, delivery_id: self._deliver(
+                receiver, event, delivery_id=delivery_id
+            ),
+            route_decision=self._route_decision,
+            begin_leased_step=lambda event, agent_id: self._begin_leased_step(
+                event, agent_id=agent_id
+            ),
+            fault_injector=self.faults.trip,
+        )
         self._register_agents()
-        self.scheduler.register("coordinator", self.mailboxes["coordinator"], self._supervisor_step)
         self.scheduler.register(
-            "scout",
-            self.mailboxes["scout"],
-            lambda delivery: self._scout_step(delivery, agent_id="scout"),
+            "coordinator", self.mailboxes["coordinator"], self._supervisor_step
+        )
+        for agent_id in ("scout", "scout-backup", "builder", "reviewer"):
+            self.scheduler.register(
+                agent_id,
+                self.mailboxes[agent_id],
+                lambda delivery, worker_id=agent_id: self.team_workers.handle(
+                    delivery, agent_id=worker_id
+                ),
+            )
+        self.scheduler.register(
+            "generalist", self.mailboxes["generalist"], self._single_agent_step
         )
         self.scheduler.register(
-            "scout-backup",
-            self.mailboxes["scout-backup"],
-            lambda delivery: self._scout_step(delivery, agent_id="scout-backup"),
+            "dream.worker", self.mailboxes["dream.worker"], self._dream_step
         )
-        self.scheduler.register("builder", self.mailboxes["builder"], self._builder_step)
-        self.scheduler.register("reviewer", self.mailboxes["reviewer"], self._reviewer_step)
-        self.scheduler.register("generalist", self.mailboxes["generalist"], self._single_agent_step)
-        self.scheduler.register("dream.worker", self.mailboxes["dream.worker"], self._dream_step)
-        self.scheduler.register("context.evolver", self.mailboxes["context.evolver"], self._evolver_step)
+        self.scheduler.register(
+            "context.evolver", self.mailboxes["context.evolver"], self._evolver_step
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._scheduler_failure_buffer: deque[Event] = deque(
+            maxlen=self.SCHEDULER_FAILURE_BUFFER_LIMIT
+        )
+        self._route_cursor = 0
+        self._reconcile_routes()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._serve, name="crazy-resident-runtime", daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, name="crazy-resident-runtime", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -242,11 +477,53 @@ class ResidentRuntime:
 
     def _serve(self) -> None:
         while not self._stop.is_set():
-            if self.expire_due_leases():
-                continue
-            if self.scheduler.run_once():
-                continue
-            self.scheduler.wait(self._seconds_until_next_lease())
+            stage = "scheduler_failure_flush"
+            try:
+                self._flush_scheduler_cycle_failures()
+                stage = "route_reconciliation"
+                self._reconcile_routes()
+                stage = "lease_expiry"
+                if self.expire_due_leases():
+                    continue
+                stage = "delivery_selection"
+                if self.scheduler.run_once():
+                    continue
+                stage = "deadline_wait"
+                self.scheduler.wait(self._seconds_until_next_lease())
+            except InjectedKernelCrash:
+                # Chaos Lab 依赖该异常模拟进程中断；不能降级成普通可恢复错误。
+                raise
+            except Exception as exc:
+                self._record_scheduler_cycle_failure(stage=stage, error=exc)
+                self._stop.wait(self.SCHEDULER_RECOVERY_DELAY_SECONDS)
+
+    def _record_scheduler_cycle_failure(
+        self, *, stage: str, error: Exception
+    ) -> Event:
+        event = Event(
+            run_id="control-plane",
+            task_id="resident-scheduler",
+            type="runtime.scheduler.cycle.failed",
+            source="runtime.scheduler",
+            payload={
+                "stage": stage,
+                "reason": f"{type(error).__name__}: {error}",
+                "recovering": True,
+            },
+        )
+        try:
+            return self.store.append(event)
+        except Exception:
+            # EventStore 自身短暂不可用时，诊断事实先进入有界内存缓冲；
+            # 持久邮箱仍是真相源，线程不能因为“记录故障失败”而退出。
+            self._scheduler_failure_buffer.append(event)
+            return event
+
+    def _flush_scheduler_cycle_failures(self) -> None:
+        while self._scheduler_failure_buffer:
+            event = self._scheduler_failure_buffer[0]
+            self.store.append(event)
+            self._scheduler_failure_buffer.popleft()
 
     def submit_task(self, request: TaskRequest) -> RunCreated:
         if request.execution_mode == "single":
@@ -257,7 +534,9 @@ class ResidentRuntime:
                 "workers; use execution_mode='single' for DeepSeek"
             )
         if request.task_pack not in {None, "resident-demo"}:
-            raise ValueError("team mode currently supports only the resident-demo task pack")
+            raise ValueError(
+                "team mode currently supports only the resident-demo task pack"
+            )
         return self._submit_team_task(request)
 
     def _submit_team_task(self, request: TaskRequest) -> RunCreated:
@@ -279,7 +558,7 @@ class ResidentRuntime:
                     "task_pack": self.team_pack.task_pack_id,
                     "team_contract": self.team_contract.model_dump(mode="json"),
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.4.0-dev",
+                    "behavior_version": "v0.5.0-dev",
                 },
             )
         )
@@ -353,6 +632,7 @@ class ResidentRuntime:
     def run_until_idle(self, *, max_steps: int = 100) -> int:
         steps = 0
         while steps < max_steps:
+            self._reconcile_routes()
             if self.scheduler.run_once():
                 steps += 1
                 continue
@@ -362,7 +642,9 @@ class ResidentRuntime:
                 continue
             break
         if steps == max_steps and self.scheduler.has_pending():
-            raise RuntimeError(f"resident runtime did not become idle after {max_steps} steps")
+            raise RuntimeError(
+                f"resident runtime did not become idle after {max_steps} steps"
+            )
         return steps
 
     def expire_due_leases(self, *, now: datetime | None = None) -> int:
@@ -373,7 +655,9 @@ class ResidentRuntime:
             raise ValueError("lease expiry clock must be timezone-aware")
         expired_count = 0
         active_leases = [
-            item for item in self.store.snapshot()["leases"] if item.get("status") == "active"
+            item
+            for item in self.store.snapshot()["leases"]
+            if item.get("status") == "active"
         ]
         for lease in active_leases:
             deadline = datetime.fromisoformat(str(lease["expires_at"]))
@@ -454,13 +738,17 @@ class ResidentRuntime:
     def snapshot(self, run_id: str | None = None) -> dict:
         snapshot = self.store.snapshot(run_id=run_id)
         runs = snapshot.pop("runs")
-        run = next((item for item in runs if run_id is None or item["run_id"] == run_id), None)
+        run = next(
+            (item for item in runs if run_id is None or item["run_id"] == run_id), None
+        )
         latest = self.store.last(run_id=run_id) if run_id else self.store.last()
         return {
             "run": run,
             **snapshot,
             "runtime": {
-                "status": "running" if self._thread is not None and self._thread.is_alive() else "manual",
+                "status": "running"
+                if self._thread is not None and self._thread.is_alive()
+                else "manual",
                 "latest_event_id": latest.id if latest else None,
                 "deepseek_configured": bool(os.getenv("DEEPSEEK_API_KEY")),
                 "fact_source": str(self.store.path),
@@ -559,7 +847,9 @@ class ResidentRuntime:
             for event in events
             if event.type == "operation.reconciled"
         }
-        if unknown_ids - reconciled_ids or (events and events[-1].type == "agent.waiting"):
+        if unknown_ids - reconciled_ids or (
+            events and events[-1].type == "agent.waiting"
+        ):
             self._append_deterministic(
                 events[-1],
                 f"single-paused:{trigger.task_id}",
@@ -570,7 +860,9 @@ class ResidentRuntime:
             return
 
         completed_turns = sum(event.type == "model.completed" for event in events)
-        max_turns = loop.assignment_contract.budgets.turns if loop.assignment_contract else 20
+        max_turns = (
+            loop.assignment_contract.budgets.turns if loop.assignment_contract else 20
+        )
         if max_turns is not None and completed_turns >= max_turns:
             failed = self._append_deterministic(
                 events[-1],
@@ -583,7 +875,9 @@ class ResidentRuntime:
                 },
                 source="runtime.single",
             )
-            self._finish_single_run(failed, succeeded=False, reason=failed.payload["reason"])
+            self._finish_single_run(
+                failed, succeeded=False, reason=failed.payload["reason"]
+            )
             return
 
         ready = self._append_deterministic(
@@ -610,15 +904,21 @@ class ResidentRuntime:
         events = self.store.read_all(task_id=trigger.task_id)
         created = next((event for event in events if event.type == "run.created"), None)
         if created is None:
-            raise RuntimeError(f"single-agent task has no run.created event: {trigger.task_id}")
+            raise RuntimeError(
+                f"single-agent task has no run.created event: {trigger.task_id}"
+            )
         task_pack_id = str(
             created.payload.get("task_pack", self.repo_maintainer_pack.task_pack_id)
         )
         pack = self.task_packs.get(task_pack_id)
         if pack is None:
             raise RuntimeError(f"unsupported task pack: {task_pack_id}")
-        assignment = next((event for event in events if event.type == "assignment.created"), None)
-        contract_payload = assignment.payload.get("contract") if assignment is not None else None
+        assignment = next(
+            (event for event in events if event.type == "assignment.created"), None
+        )
+        contract_payload = (
+            assignment.payload.get("contract") if assignment is not None else None
+        )
         # New runs persist the exact Contract; the fallback keeps legacy runs recoverable.
         contract = (
             AssignmentContract.model_validate(contract_payload)
@@ -645,7 +945,9 @@ class ResidentRuntime:
         self._single_loops[trigger.task_id] = loop
         return loop
 
-    def _finish_single_run(self, trigger: Event, *, succeeded: bool, reason: str) -> None:
+    def _finish_single_run(
+        self, trigger: Event, *, succeeded: bool, reason: str
+    ) -> None:
         assignment_type = "assignment.completed" if succeeded else "assignment.failed"
         assignment = self._append_deterministic(
             trigger,
@@ -739,7 +1041,9 @@ class ResidentRuntime:
         if created is None:
             raise RuntimeError(f"team run has no run.created event: {run_id}")
         persisted = created.payload.get("team_contract")
-        return TeamContract.model_validate(persisted) if persisted else self.team_contract
+        return (
+            TeamContract.model_validate(persisted) if persisted else self.team_contract
+        )
 
     def _supervisor_context(
         self,
@@ -828,7 +1132,7 @@ class ResidentRuntime:
                 current_expiry = datetime.fromisoformat(str(lease["expires_at"]))
             except ValueError:
                 current_expiry = None
-        current = datetime.now(timezone.utc)
+        checked_at = datetime.now(timezone.utc)
         if (
             assignment is None
             or assignment.get("agent_id") != agent_id
@@ -837,7 +1141,7 @@ class ResidentRuntime:
             or lease.get("agent_id") != agent_id
             or current_expiry is None
             or current_expiry.tzinfo is None
-            or current_expiry <= current
+            or current_expiry <= checked_at
         ):
             self._append_deterministic(
                 trigger,
@@ -853,16 +1157,19 @@ class ResidentRuntime:
             )
             return False
 
-        lease_seconds = int(lease.get("lease_seconds", 30))
-        proposed_expiry = current + timedelta(seconds=lease_seconds)
-        expires_at = max(current_expiry, proposed_expiry)
-        self._append_deterministic(
+        heartbeat = self._append_deterministic(
             trigger,
             f"heartbeat:{agent_id}:{assignment_id}:{trigger.id}",
             "runtime.agent.heartbeat",
             {"agent_id": agent_id, "assignment_id": assignment_id},
             source="runtime.scheduler",
         )
+        # 重投同一 Delivery 时，复用确定性 heartbeat 首次落盘的时间锚点，
+        # 使 Lease 续期 Event 的 ID 和 payload 都保持一致。
+        renewed_at = heartbeat.created_at
+        lease_seconds = int(lease.get("lease_seconds", 30))
+        proposed_expiry = renewed_at + timedelta(seconds=lease_seconds)
+        expires_at = max(current_expiry, proposed_expiry)
         self._append_deterministic(
             trigger,
             f"lease-renewed:{agent_id}:{assignment_id}:{trigger.id}",
@@ -873,121 +1180,12 @@ class ResidentRuntime:
                 "stage_id": lease.get("stage_id"),
                 "agent_id": agent_id,
                 "lease_seconds": lease_seconds,
-                "renewed_at": current.isoformat(),
+                "renewed_at": renewed_at.isoformat(),
                 "expires_at": expires_at.isoformat(),
             },
             source="runtime.scheduler",
         )
         return True
-
-    def _scout_step(self, delivery: Delivery, *, agent_id: str) -> None:
-        event = delivery.event
-        if event.type == "assignment.created":
-            if not self._begin_leased_step(event, agent_id=agent_id):
-                return
-            tool_result = self._collect_evidence(event)
-            self._propose(
-                agent_id=agent_id,
-                trigger=event,
-                kind=CommandKind.EVIDENCE,
-                payload={
-                    "assignment_id": event.payload["assignment_id"],
-                    "summary": "Repository evidence and deterministic test observations are available.",
-                    "evidence_refs": [tool_result.id],
-                },
-                key=f"{event.run_id}:{agent_id}:{event.payload['assignment_id']}:evidence",
-            )
-        elif event.type == "a2a.peer.requested":
-            evidence_refs = [
-                item.id
-                for item in self.store.read_all(run_id=event.run_id)
-                if item.type in {"evidence.recorded", "tool.completed"}
-            ]
-            self._propose(
-                agent_id=agent_id,
-                trigger=event,
-                kind=CommandKind.PEER_RESPONSE,
-                payload={
-                    "assignment_id": event.payload["assignment_id"],
-                    "receiver": event.payload["sender"],
-                    "brief": "Cross-check complete: the cited tool observation exists and is current.",
-                    "evidence_refs": evidence_refs,
-                    "correlation_id": event.payload.get("correlation_id"),
-                },
-                key=f"{event.run_id}:{agent_id}:peer-response:{event.payload['assignment_id']}",
-            )
-
-    def _builder_step(self, delivery: Delivery) -> None:
-        event = delivery.event
-        if event.type == "assignment.created":
-            if not self._begin_leased_step(event, agent_id="builder"):
-                return
-            evidence_agent = next(
-                (
-                    item.payload.get("agent_id")
-                    for item in reversed(self.store.read_all(run_id=event.run_id))
-                    if item.type == "evidence.recorded"
-                ),
-                "scout",
-            )
-            self._propose(
-                agent_id="builder",
-                trigger=event,
-                kind=CommandKind.PEER_REQUEST,
-                payload={
-                    "assignment_id": event.payload["assignment_id"],
-                    "receiver": evidence_agent,
-                    "scope": ["evidence"],
-                    "permissions": ["read"],
-                    "depth": 1,
-                    "peer_budget": 1,
-                    "brief": "Confirm that the evidence is current before I compose the artifact.",
-                },
-                key=f"{event.run_id}:builder:{event.payload['assignment_id']}:peer-request",
-            )
-        elif event.type == "a2a.peer.responded":
-            if not self._begin_leased_step(event, agent_id="builder"):
-                return
-            self._propose(
-                agent_id="builder",
-                trigger=event,
-                kind=CommandKind.ARTIFACT,
-                payload={
-                    "assignment_id": event.payload["assignment_id"],
-                    "title": "Bounded execution plan",
-                    "summary": "A reversible plan grounded in the Scout evidence capsule.",
-                    "evidence_refs": event.payload["evidence_refs"],
-                    "content": {
-                        "steps": ["inspect evidence", "apply bounded change", "run checks"],
-                        "rollback": "restore the previous immutable behavior version",
-                    },
-                },
-                key=f"{event.run_id}:builder:{event.payload['assignment_id']}:artifact",
-            )
-
-    def _reviewer_step(self, delivery: Delivery) -> None:
-        event = delivery.event
-        if event.type != "assignment.created":
-            return
-        if not self._begin_leased_step(event, agent_id="reviewer"):
-            return
-        evidence_refs = [
-            item.id
-            for item in self.store.read_all(run_id=event.run_id)
-            if item.type in {"evidence.recorded", "artifact.recorded", "a2a.peer.responded"}
-        ]
-        self._propose(
-            agent_id="reviewer",
-            trigger=event,
-            kind=CommandKind.REVIEW,
-            payload={
-                "assignment_id": event.payload["assignment_id"],
-                "decision": "approved",
-                "summary": "Evidence references exist, A2A depth is bounded, and rollback is explicit.",
-                "evidence_refs": evidence_refs,
-            },
-            key=f"{event.run_id}:reviewer:{event.payload['assignment_id']}:review",
-        )
 
     def _dream_step(self, delivery: Delivery) -> None:
         event = delivery.event
@@ -1004,7 +1202,8 @@ class ResidentRuntime:
         evidence = [
             item.id
             for item in self.store.read_all(run_id=event.run_id)
-            if item.type in {"evidence.recorded", "artifact.recorded", "review.recorded"}
+            if item.type
+            in {"evidence.recorded", "artifact.recorded", "review.recorded"}
         ]
         frozen = self._append_deterministic(
             event,
@@ -1043,7 +1242,9 @@ class ResidentRuntime:
             },
             source="dream.worker",
         )
-        self._deliver("context.evolver", signal, delivery_id=f"evolution:{event.run_id}")
+        self._deliver(
+            "context.evolver", signal, delivery_id=f"evolution:{event.run_id}"
+        )
         self._append_deterministic(
             event,
             f"dream:{job_id}:completed",
@@ -1124,7 +1325,9 @@ class ResidentRuntime:
             self._route_decision(decision)
             return decision
 
-        compiled = self.context.compile(agent_id=agent_id, trigger=trigger, context_key=key)
+        compiled = self.context.compile(
+            agent_id=agent_id, trigger=trigger, context_key=key
+        )
         request = self._append_deterministic(
             trigger,
             f"model-request:{key}",
@@ -1179,25 +1382,39 @@ class ResidentRuntime:
 
     def _route_decision(self, decision: KernelDecision) -> None:
         for event in self.kernel.events_for(decision):
-            receiver: str | None = None
-            if event.type == "assignment.created":
-                receiver = event.payload.get("agent_id")
-            elif event.type in {
-                "agent.result.submitted",
-                "a2a.peer.requested",
-                "a2a.peer.responded",
-            }:
-                receiver = event.payload.get("receiver")
-            elif event.type == "agent.nudged":
-                receiver = event.payload.get("agent_id")
-            if receiver in self.mailboxes:
-                self._deliver(
-                    receiver,
-                    event,
-                    delivery_id=f"route:{event.id}:{receiver}",
-                )
-            if event.type == "run.succeeded":
-                self._queue_dream(event)
+            self._route_event(event)
+
+    def _reconcile_routes(self) -> int:
+        routed = 0
+        for record in self.store.read_records(after=self._route_cursor):
+            if self._route_event(record.event):
+                routed += 1
+            self._route_cursor = record.cursor
+        return routed
+
+    def _route_event(self, event: Event) -> bool:
+        receiver: str | None = None
+        if event.type == "assignment.created":
+            receiver = event.payload.get("agent_id")
+        elif event.type in {
+            "agent.result.submitted",
+            "a2a.peer.requested",
+            "a2a.peer.responded",
+        }:
+            receiver = event.payload.get("receiver")
+        elif event.type == "agent.nudged":
+            receiver = event.payload.get("agent_id")
+        if receiver in self.mailboxes:
+            self._deliver(
+                receiver,
+                event,
+                delivery_id=f"route:{event.id}:{receiver}",
+            )
+            return True
+        if event.type == "run.succeeded":
+            self._queue_dream(event)
+            return True
+        return False
 
     def _queue_dream(self, succeeded: Event) -> None:
         signal = self._append_deterministic(
@@ -1225,58 +1442,6 @@ class ResidentRuntime:
             causation_id=signal.id,
         )
         self._deliver("dream.worker", job, delivery_id=f"dream:{succeeded.run_id}")
-
-    def _collect_evidence(self, assignment: Event) -> Event:
-        operation_id = f"operation_{assignment.run_id}_evidence"
-        started = self._append_deterministic(
-            assignment,
-            f"tool:{operation_id}:started",
-            "operation.started",
-            {
-                "operation_id": operation_id,
-                "assignment_id": assignment.payload["assignment_id"],
-                "tool_name": "evidence.collect",
-                "idempotency_key": operation_id,
-            },
-            source="tool.pipeline",
-        )
-        self._append_deterministic(
-            assignment,
-            f"tool:{operation_id}:requested",
-            "tool.requested",
-            {"operation_id": operation_id, "tool_name": "evidence.collect", "args": {"depth": "bounded"}},
-            source="tool.pipeline",
-            causation_id=started.id,
-        )
-        trace = "\n".join(
-            f"trace[{index:03d}] verified deterministic repository fact and test boundary"
-            for index in range(40)
-        )
-        completed = self._append_deterministic(
-            assignment,
-            f"tool:{operation_id}:completed",
-            "tool.completed",
-            {
-                "operation_id": operation_id,
-                "result": {
-                    "name": "evidence.collect",
-                    "ok": True,
-                    "summary": "40 bounded observations collected",
-                    "content": trace,
-                },
-            },
-            source="tool.pipeline",
-            causation_id=started.id,
-        )
-        self._append_deterministic(
-            assignment,
-            f"tool:{operation_id}:operation-completed",
-            "operation.completed",
-            {"operation_id": operation_id, "result_event_id": completed.id},
-            source="tool.pipeline",
-            causation_id=completed.id,
-        )
-        return completed
 
     def _deliver(self, receiver: str, event: Event, *, delivery_id: str) -> None:
         self.mailboxes[receiver].send(event, delivery_id=delivery_id)

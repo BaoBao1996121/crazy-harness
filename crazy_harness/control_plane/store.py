@@ -27,6 +27,14 @@ class EventRecord(BaseModel):
     event: Event
 
 
+class CommandPreconditionFailed(RuntimeError):
+    """A dynamic command invariant changed before its atomic commit."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class SQLiteEventStore:
     """SQLite event log, command ledger, and rebuildable read projections."""
 
@@ -34,10 +42,15 @@ class SQLiteEventStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._condition = threading.Condition()
+        self._transaction_state = threading.local()
         self._initialize()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        active = getattr(self._transaction_state, "connection", None)
+        if active is not None:
+            yield active
+            return
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
@@ -87,35 +100,40 @@ class SQLiteEventStore:
     def append(self, event: Event) -> Event:
         """Append once by Event.id and update projections in the same transaction."""
 
-        serialized = event.model_dump_json()
-        inserted = False
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO events(event_id, run_id, task_id, event_type, event_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (event.id, event.run_id, event.task_id, event.type, serialized),
-            )
-            if cursor.rowcount:
-                inserted = True
-                seq = int(cursor.lastrowid)
-                self._project_event(connection, event, seq)
-            else:
-                row = connection.execute(
-                    "SELECT event_json FROM events WHERE event_id = ?", (event.id,)
-                ).fetchone()
-                existing = Event.model_validate_json(row["event_json"]) if row else None
-                if existing is None or existing.model_dump(exclude={"created_at"}) != event.model_dump(
-                    exclude={"created_at"}
-                ):
-                    raise ValueError(f"event id already belongs to another event: {event.id}")
+            persisted, inserted = self._append_in_transaction(connection, event)
             connection.commit()
         if inserted:
             with self._condition:
                 self._condition.notify_all()
-        return existing if not inserted else event
+        return persisted
+
+    def _append_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        event: Event,
+    ) -> tuple[Event, bool]:
+        serialized = event.model_dump_json()
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO events(event_id, run_id, task_id, event_type, event_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (event.id, event.run_id, event.task_id, event.type, serialized),
+        )
+        if cursor.rowcount:
+            self._project_event(connection, event, int(cursor.lastrowid))
+            return event, True
+        row = connection.execute(
+            "SELECT event_json FROM events WHERE event_id = ?", (event.id,)
+        ).fetchone()
+        existing = Event.model_validate_json(row["event_json"]) if row else None
+        if existing is None or existing.model_dump(
+            exclude={"created_at"}
+        ) != event.model_dump(exclude={"created_at"}):
+            raise ValueError(f"event id already belongs to another event: {event.id}")
+        return existing, False
 
     def read_records(
         self,
@@ -217,6 +235,65 @@ class SQLiteEventStore:
                 "SELECT * FROM commands WHERE idempotency_key = ?", (idempotency_key,)
             ).fetchone()
         return dict(row) if row else None
+
+    def commit_command(
+        self,
+        idempotency_key: str,
+        *,
+        state: str,
+        decision_json: str,
+        events: list[Event],
+        after_event: Callable[[Event], None] | None = None,
+        precondition: Callable[[], str | None] | None = None,
+    ) -> list[Event]:
+        """Atomically append formal facts, update projections, and finalize a command."""
+
+        persisted: list[Event] = []
+        inserted_any = False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # BEGIN IMMEDIATE serializes competing writers. Re-reading dynamic
+            # authority here closes the validation/commit TOCTOU window.
+            if precondition is not None:
+                previous = getattr(self._transaction_state, "connection", None)
+                self._transaction_state.connection = connection
+                try:
+                    rejection = precondition()
+                finally:
+                    self._transaction_state.connection = previous
+                if rejection is not None:
+                    raise CommandPreconditionFailed(rejection)
+            for event in events:
+                stored, inserted = self._append_in_transaction(connection, event)
+                persisted.append(stored)
+                inserted_any = inserted_any or inserted
+                if after_event is not None:
+                    after_event(stored)
+            cursor = connection.execute(
+                """
+                UPDATE commands SET state = ?, decision_json = ?, updated_at = ?
+                WHERE idempotency_key = ? AND state = 'processing'
+                """,
+                (state, decision_json, _utc_now(), idempotency_key),
+            )
+            if cursor.rowcount != 1:
+                row = connection.execute(
+                    "SELECT state, decision_json FROM commands WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["state"] != state
+                    or row["decision_json"] != decision_json
+                ):
+                    raise RuntimeError(
+                        f"command could not be finalized: {idempotency_key}"
+                    )
+            connection.commit()
+        if inserted_any:
+            with self._condition:
+                self._condition.notify_all()
+        return persisted
 
     def finish_command(self, idempotency_key: str, *, state: str, decision_json: str) -> None:
         with self._connect() as connection:
@@ -358,12 +435,23 @@ class SQLiteEventStore:
                 updated_at=event.created_at.isoformat(),
             )
             self._save_projection(connection, "assignment", assignment_id, state, seq)
-        elif event.type.startswith("assignment.") and not event.type.startswith("assignment.lease."):
+        else:
+            status_by_type = {
+                "assignment.running": "running",
+                "assignment.waiting": "waiting",
+                "assignment.reviewing": "reviewing",
+                "assignment.submitted": "submitted",
+                "assignment.succeeded": "succeeded",
+                "assignment.completed": "completed",
+                "assignment.failed": "failed",
+                "assignment.expired": "expired",
+            }
             assignment_id = event.payload.get("assignment_id")
-            if assignment_id:
+            status = status_by_type.get(event.type)
+            if assignment_id and status is not None:
                 state = self._load_projection(connection, "assignment", str(assignment_id))
                 if state is not None:
-                    state["status"] = event.type.rsplit(".", 1)[-1]
+                    state["status"] = status
                     state["updated_at"] = event.created_at.isoformat()
                     self._save_projection(connection, "assignment", str(assignment_id), state, seq)
 

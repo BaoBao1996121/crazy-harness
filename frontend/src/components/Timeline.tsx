@@ -94,7 +94,10 @@ export function Timeline({
               <span className={`timeline-node ${meta.boundary}`}><Icon size={14} /></span>
               <span className="timeline-copy">
                 <strong>{toolName ? `${meta.label} · ${toolLabel(toolName)}` : meta.label}</strong>
-                <span><code>{type}</code> · {record.event.source}</span>
+                <span>
+                  <code>{type}</code> · {record.event.source} · 任务 / AgentRun{" "}
+                  <code title={record.event.task_id}>{shortId(record.event.task_id, 18)}</code>
+                </span>
               </span>
               <span className={`boundary-tag ${meta.boundary}`} title={boundaryLabel(meta.boundary)}>{boundaryLabel(meta.boundary).split(" / ")[0]}</span>
               <span className="timeline-time">{time}<small>{shortId(eventId)}</small></span>

@@ -1,15 +1,233 @@
 # Crazy Harness 架构走读
 
-> 日期：2026-07-10
-> 状态：目标架构 v0.2 已确认；MVP-0 代码仍是薄脚手架，核心机制尚未做实
+> 日期：2026-07-18
+> 当前状态：已按 `control_plane/team_workers.py`、`kernel.py`、`runtime.py` 与 `taskpacks/resident_team.py` 重新核对
+> 历史说明：本文后半部分保留 2026-07-10 的 MVP-0 设计快照，相关标题均标为“历史存档”，不能当作当前实现状态
 
 ## 一句话结论
 
-当前代码已经有 `Full Topology Thin Harness` 的第一版形状，但目标架构在本轮拷问后明显更完整。阅读时必须区分“已有代码”和“已确认但待实现”，不能把文档里的目标语义当成当前能力。
+当前 Crazy 已经形成一条本地、持久、事件驱动的 Team 执行链：Supervisor 动态提出 PlanPatch，Kernel 产生 Assignment 与 Lease，Durable Mailbox 唤醒 Team Worker；每个 Assignment 和 Peer Request 都进入隔离 child AgentRun，由 canonical AgentLoop 逐轮执行，最终结果仍需 Kernel 校验 provenance 与 evidence 后才能晋升为根任务正式事实。
 
-## 当前脚手架
+## 当前实现全景
 
-结论：现有代码提供入口、最小事实存储和四个手写槽位，尚不具备真正的常驻恢复、受控 A2A 和 Loop Engineering。
+```mermaid
+flowchart TB
+    IN["入口 / HTTP · CLI"] --> RR["常驻运行时 / ResidentRuntime"]
+    RR --> SC["常驻调度器 / ResidentScheduler"]
+    RR <--> DB[("持久事实 / SQLite EventStore")]
+    DB --> PJ["可重建投影 / Projections"]
+    DB --> MB["持久邮箱 / Durable Mailboxes"]
+
+    SC --> CO["总控身份 / Coordinator"]
+    CO --> SP["编排策略 / SupervisorPolicy"]
+    PJ --> SP
+    SP --> PP["计划候选 / PlanPatch Candidate"]
+    PP --> CK["控制内核 / ControlKernel"]
+    CK <--> DB
+    CK --> AS["正式委派与租约 / Assignment + Lease"]
+    AS --> MB
+
+    MB --> TW["团队执行器 / TeamWorkerEngine"]
+    TW --> AR["委派子运行 / Assignment child AgentRun"]
+    AR --> AL["规范循环 / canonical AgentLoop"]
+    AL --> CX["上下文编译 / ContextBuilder"]
+    AL --> CP["能力编译 / CapabilityCompiler"]
+    AL --> MP["模型端口 / ModelProvider"]
+    AL --> TP["工具管线 / ToolPipeline + Ledger"]
+    AL --> CG["准出门 / CompletionGate"]
+    TP --> AF["制品与观察 / Artifacts + Observations"]
+    AF --> DB
+
+    AL --> RA["结果适配 / Result Adapter"]
+    RA --> CK
+    CK --> FF["正式团队事实 / Evidence · Artifact · Review"]
+    FF --> DB
+
+    AL -->|"受控一跳"| PR["同伴请求 / Peer Request"]
+    PR --> CK
+    CK --> MB
+    MB --> PA["同伴子运行 / Peer child AgentRun"]
+    PA --> AL2["规范循环 / canonical AgentLoop"]
+    AL2 --> CK
+    CK --> WB["响应桥接 / Mirror + Wake Builder"]
+    WB --> AR
+
+    DB --> SSE["事件流 / SSE"]
+    SSE --> UI["控制室 / Control Room"]
+    DB --> BG["后台治理 / Dream · Memory · Evolution"]
+```
+
+| 架构名词 | 当前含义 |
+|---|---|
+| ResidentRuntime / 常驻运行时 | 持有 Gateway、Store、Scheduler、Kernel、Mailbox 与 Worker 注册；后台线程常驻，Agent 本身是可随时唤醒的逻辑身份，不是永久占用线程。 |
+| EventStore / 事实源 | SQLite append-only Event 与命令状态的持久来源；Projection、UI 和恢复逻辑都从它重建，内存对象不是权威。 |
+| ResidentScheduler / 常驻调度器 | 等待内存 wake signal 或最近 Lease Deadline，每次选择一个未 Ack Delivery 交给对应 Handler；当前是单消费者，普通调度周期异常由 ResidentRuntime 监督并从持久事实恢复。 |
+| SupervisorPolicy / 编排策略 | 根据 TeamContract、AgentCard、完成阶段、Attempt、状态和负载提出下一份 PlanPatch，不直接创建正式 Assignment。 |
+| ControlKernel / 控制内核 | 校验 Schema、身份、权限、预算、Contract、Lease、provenance 与 evidence；唯一能把 Candidate 转为正式 Team 事实的边界。 |
+| Assignment / 正式委派 | Supervisor 候选获准后产生的工作合同，包含目标、准出条件、能力、结果种类、Attempt 与持有者。 |
+| Lease / 执行租约 | 限定某 Agent 在某段时间内提交该 Assignment 结果的权力；支持 Heartbeat/Renew、Expire、Release 与旧 Delivery fencing。 |
+| Durable Mailbox / 持久邮箱 | 每个逻辑 Agent 的待处理 Delivery 集合；至少一次投递、显式 Ack，进程退出后未完成消息仍存在。 |
+| TeamWorkerEngine / 团队执行器 | 将一次 Delivery 翻译为一次 canonical AgentLoop 推进，并处理 child run 创建、Wait/Resume、结果适配与已知失败传播。 |
+| AgentRun / Agent 子运行 | 一次具体执行实体。根 Run 保存团队任务；Assignment child AgentRun 与 Peer child AgentRun 各自保存私有 Context、LocalPlan、模型轨迹和工具证据。 |
+| canonical AgentLoop / 规范循环 | 单 Agent 与 Team Worker 共用的真实循环：编译 Context、调用模型、持久化 Response、校验 Command、执行 Tool、记录 Observation、运行 CompletionGate。 |
+| Promotion / 结果晋升 | child `agent.submitted` 先成为 Candidate；Kernel 绑定 Assignment、Lease、AgentRun、submission 和 evidence refs 后才写根任务正式事实。 |
+| Atomic Command / 原子命令 | Kernel 将决策 Event、正式 Event、Projection 与 Command Ledger 终态放在同一 SQLite 事务中提交。 |
+| Event-as-Outbox / 事件即发件箱 | 正式 Event 同时是待投递记录；Runtime 以 Mailbox Delivery 作为回执，崩溃后补投缺失回执。 |
+| Dead Letter / 死信 | 同一 Delivery 达到初始失败阈值后的隔离事实；同时终结仍在运行的 Run/Assignment/Lease，避免任务悬空或毒消息饿死其他 Worker。 |
+
+## Team Assignment 执行路径
+
+```mermaid
+sequenceDiagram
+    participant G as "入口 / Gateway"
+    participant S as "总控策略 / Supervisor"
+    participant K as "控制内核 / Kernel"
+    participant M as "持久邮箱 / Mailbox"
+    participant W as "团队执行器 / Team Worker"
+    participant L as "委派子循环 / Assignment AgentLoop"
+    participant D as "事实源 / EventStore"
+
+    G->>D: run.created + event.external.received
+    M->>S: 唤醒 Coordinator
+    S->>K: PlanPatch Candidate
+    K->>D: orchestration.plan.patched + assignment.created + assignment.lease.acquired
+    K->>M: 持久投递 Assignment
+    M->>W: Delivery
+    W->>D: runtime.agent.heartbeat + assignment.lease.renewed
+    W->>D: agent.run.created(kind=assignment)
+    W->>L: run_once()
+    L->>D: context.manifest.compiled
+    L->>D: model.requested + model.completed
+    L->>D: agent.command.validated
+    L->>D: tool.completed + completion.gate.passed
+    L->>D: agent.submitted
+    W->>K: Result Candidate + agent_run_id + submission_event_id + evidence_refs
+    K->>D: formal result + assignment.succeeded + assignment.lease.released
+    K->>M: agent.result.submitted → Coordinator
+    Note over K,M: 正式事实原子提交；若路由前崩溃，Event Outbox 按 cursor 补投
+```
+
+当前 Resident Demo 的 TeamContract 是 `evidence -> artifact -> review`。这不是代码里写死的 A-B-C 消息链：DAG 由 TaskPack 声明，Supervisor 每次都依据最新公共事实提出下一份委派，Kernel 再检查依赖和能力。当前 Contract 的并发上限为 1，因此演示仍按阶段串行；架构可表达并发约束，不等于当前已经实现并验证并行吞吐。
+
+Team Worker 使用 Scripted Model 提供可复现的动作序列，但每一步都真实经过公共 AgentLoop。需要记住的区分是：
+
+```text
+Scripted Model = 当前动作建议是确定性的
+canonical AgentLoop = Context、Command、Tool、Gate、持久化与恢复路径都是真实的
+```
+
+## Builder 与 Peer 的 Wait/Resume
+
+```mermaid
+sequenceDiagram
+    participant B as "Builder 子运行 / Builder AgentRun"
+    participant K as "控制内核 / Kernel"
+    participant M as "持久邮箱 / Mailbox"
+    participant P as "Scout 同伴子运行 / Peer AgentRun"
+    participant D as "事实源 / EventStore"
+
+    B->>K: Peer Request Candidate
+    K->>D: 校验 active Lease、peer.request 能力、depth=1、budget=1
+    K->>M: a2a.peer.requested
+    B->>D: agent.waiting(correlation_id)
+    M->>P: 创建或恢复 Peer child AgentRun
+    P->>D: Context → Model → Tool → Gate → agent.submitted
+    P->>K: Peer Response Candidate + provenance + evidence refs
+    K->>D: 根任务 a2a.peer.responded
+    K->>M: 投递给 Builder
+    M->>D: 镜像响应到 Builder child AgentRun
+    M->>B: 唤醒并 run_once()
+    B->>D: 下一轮 model.requested，继续原计划
+```
+
+| 共享给对方 | 不共享给对方 |
+|---|---|
+| Assignment 标识、Sender/Receiver、Correlation ID | 完整消息历史 |
+| 受限 Brief、Scope、Permissions、Schema | 系统提示词与隐藏推理 |
+| Kernel 已接受的公共 Evidence Ref | LocalPlan 与完整私有 Context |
+| 简短 Peer Response 与引用 | 其他 AgentRun 的原始 Tool 输出 |
+
+A2A 的根任务消息和双方 child run 轨迹使用不同 `task_id`。Peer Response 先在根任务成为正式事实，再由 Bridge 生成 Builder 私有镜像；这既保留公共审计链，也避免把 Scout 的完整 Context 直接拼进 Builder。
+
+## Kernel 信任边界
+
+模型输出 JSON、child `agent.submitted` 或数据库中“恰好存在的一个 Event”都不能自动成为事实。当前 Kernel 的 Team 校验至少覆盖：
+
+1. Peer payload 必须通过严格 Schema，未知字段或错误类型持久化为 rejection，而不是让 Handler 因 `TypeError` 崩溃。
+2. Peer Request 必须绑定当前 Assignment holder 与未过期 Lease；Assignment 还必须显式拥有 `peer.request` capability。
+3. Peer depth 与 budget 由 Harness 固定管理，模型不能把 `peer_budget` 改大。
+4. Assignment Result 的 root task 必须与正式 Assignment 一致。
+5. `agent_run_id` 必须解析到同 Run、同 Assignment、同 actor 的 seed；seed 必须由正式 Assignment/Peer Request 直接触发，Contract 必须匹配根 Assignment/Peer Contract，`submission_event_id` 必须属于该 child AgentRun。
+6. 每个 Model Request 必须沿 causation 回溯到 Seed，或回溯到逐字段核对过的 A2A Bridge Observation；任意孤儿 Event 不能伪造模型执行起点。
+7. Evidence Ref 必须存在于同 Run、类型被当前 CommandKind 允许；Tool Result 必须成功、属于当前 child AgentRun 与 actor、拥有 `Model -> Command -> operation.started -> tool.requested -> tool.completed -> operation.completed` 完整链，并覆盖 Contract 要求的工具名。
+8. Peer Response 必须与持久 Request 的 assignment、sender、receiver、correlation 和 Peer child AgentRun 一致。
+9. submission 必须来自 `model.requested -> model.completed -> submit_output Command -> passed CompletionGate` 的持久链，Candidate 制品字段必须与 submission artifact 一致。
+10. Peer Request 双向校验 `peer.request/peer.respond` 并禁止 self request；即使 Lease Projection 尚为 active，墙钟已过期的 Peer Response 也不能晋升。
+11. Lease 与 Peer 唯一响应在 SQLite 写锁内再次校验，避免“校验通过、提交前过期/重复”的 TOCTOU 竞态。
+12. Command 正式事实与 Ledger 终态原子提交，Mailbox 路由由 Event-as-Outbox 恢复。
+
+因此正确的边界仍是：**模型建议动作，Harness 产生事实；AgentRun 申请交作业，Kernel 决定是否晋升。**
+
+## 恢复与失败传播
+
+```mermaid
+flowchart LR
+    CR["Mailbox Ack 前崩溃"] --> RD["同一 Delivery 重投"]
+    RD --> ID["确定性 Event ID + 幂等命令"]
+    ID --> CT["从持久 cursor 继续 AgentLoop"]
+
+    AC["Command 事务中崩溃"] --> AR["整批回滚并从 processing 恢复"]
+    OF["正式 Event 已提交、路由前崩溃"] --> OR["Event Outbox 补投确定性 Delivery"]
+
+    UE["普通 Handler 异常"] --> RT["持久 redelivery，最多 3 次"]
+    RT --> DLQ["Dead Letter：终结 Run/Assignment/Lease"]
+    SX["调度周期瞬时异常"] --> SR["cycle.failed + 监督重试"]
+    DB["EventStore 暂时不可写"] --> BF["有界缓冲，恢复后补记故障"]
+
+    WT["Builder 等待时重启"] --> RE["重建 Request、Wait 与模型游标"]
+    RE --> RP["复用已完成动作，不重复 Peer Request"]
+
+    KF["child 已知失败或轮次耗尽"] --> AF["assignment.failed"]
+    PF["Peer promotion 被拒"] --> AF
+    AF --> RL["释放 Lease"]
+    RL --> NU["Nudge Coordinator 重新规划"]
+
+    TO["Worker 静默失联"] --> DL["Deadline Expire"]
+    DL --> DG["Agent Degrade + 备用 Agent 接管"]
+```
+
+已知失败不需要傻等 Deadline：Assignment child 的 failed/stopped/turn budget，以及 Peer child 的 failed/stopped/turn budget 或 Peer promotion rejection，会立即传播到请求方 Assignment。未知失联仍由 Deadline 负责兜底。Lease 提供 at-least-once 与 fencing，不提供跨机器 exactly-once；真正副作用仍需要 OperationLedger、幂等键或外部对账。
+
+## 当前诚实边界
+
+| 能力 | 当前状态 |
+|---|---|
+| Supervisor + TeamContract DAG + Lease | 本地可运行，策略为确定性 `CapabilitySupervisorPolicy`。 |
+| Assignment/Peer child AgentRun | 已接 canonical AgentLoop，可持久 Wait/Resume、重建与 Kernel promotion。 |
+| Team 模型 | 仅 Scripted Model；在线 DeepSeek Team 请求被明确拒绝。 |
+| A2A Transport | 同进程 SQLite EventStore + Durable Mailbox；Remote A2A 尚未实现。 |
+| 并发 | Scheduler 为单消费者，Demo Contract 并发上限为 1；真实并行未实现、未测量。 |
+| 故障语义 | 本地进程崩溃恢复、重投、Lease fencing 与已知 Peer failure propagation；不是生产级分布式容错。 |
+| Team 收益 | 尚无同模型、同任务、同预算的 Single-vs-Team 评测，不能声称 Team 一定优于 Single。 |
+
+补充：当前本地故障语义还覆盖原子 Command、Event Outbox 与有界重试/Dead Letter；这些不等于跨机器 exactly-once。
+
+## 当前源码阅读顺序
+
+| 顺序 | 文件 | 先回答的问题 |
+|---:|---|---|
+| 1 | `crazy_harness/taskpacks/resident_team.py` | TeamContract、AssignmentContract、Scripted Model 动作与 Team Tool 如何声明？ |
+| 2 | `crazy_harness/control_plane/runtime.py` | Scheduler 如何常驻、投递如何路由、Lease 如何续约/过期、TeamWorkerEngine 如何注册？ |
+| 3 | `crazy_harness/control_plane/team_workers.py` | Assignment/Peer child AgentRun 如何创建、推进、等待、恢复、晋升与失败？ |
+| 4 | `crazy_harness/control_plane/kernel.py` | Proposal 在哪些 Schema、authority、budget、provenance 与 evidence 条件下才成为事实？ |
+| 5 | `crazy_harness/core/agents/loop.py` | canonical AgentLoop 的 Context、Model、Command、Tool、Observation 与 Stop 控制权如何分配？ |
+| 6 | `tests/control_plane/test_team_worker_agent_loop.py` | 哪些架构语义已经被可执行断言证明？ |
+
+## 历史存档：MVP-0 薄脚手架
+
+> 以下内容冻结于 2026-07-10，只用于理解项目从薄脚手架演进到当前架构的过程。其中“待手写”“尚未实现”和测试数量均是当时事实，不代表当前仓库。当前状态以上文与源码为准。
+
+当时的结论：代码只提供入口、最小事实存储和四个手写槽位，尚不具备真正的常驻恢复、受控 A2A 和 Loop Engineering。
 
 ```mermaid
 graph TD
@@ -60,7 +278,7 @@ graph TD
 | 运行时清单（RuntimeManifest） | 告诉模型当前模式、时间、工作目录和可用能力等动态事实。 |
 | 四类 Agent | Coordinator 负责全局计划；Scout 收集信息；Builder 执行；Reviewer 独立验收。 |
 
-## 目标静态架构
+## 历史存档：当时的目标静态架构
 
 结论：目标系统把持久事实、可重建状态、单轮上下文和外部副作用分成四个层次。
 
@@ -153,7 +371,7 @@ graph TD
 | 单轮认知输入 | ContextBuilder、PromptContract、ContextManifest | 这一轮模型被允许看到什么，为什么 |
 | 受控执行 | Validator、Hook、Policy、ToolScheduler、Runtime | 模型建议的动作是否能执行，如何避免越权和重复副作用 |
 
-## 单 Agent 一轮
+## 历史存档：当时设计的单 Agent 一轮
 
 结论：每一轮都从持久事实重新编译上下文，模型只产出候选 command，Harness 完成校验、执行和状态转移。
 
@@ -215,7 +433,7 @@ sequenceDiagram
 - 操作已标记 started、外部结果未知：恢复为 `UNKNOWN`，先对账。
 - 结果已记录、状态投影未更新：reducer 从 EventLog 重建，不重复产生业务效果。
 
-## Teamwork 运行关系
+## 历史存档：当时设计的 Teamwork 运行关系
 
 结论：Coordinator 动态维护全局计划，普通 Agent 只在当前 Assignment 内做有界一跳协作。
 
@@ -266,7 +484,7 @@ sequenceDiagram
 
 这个图不是固定业务链。Scout、Builder、Reviewer 是否出现、是否并行、是否需要第二轮修订，都由当前事件、AgentCard、证据和 Contract 决定。
 
-## 已实现模块
+## 历史存档：当时的已实现模块
 
 ### 入口层
 
@@ -349,7 +567,7 @@ sequenceDiagram
 - `examples/hello-crazy-api/crazy.yml`
   - CI/CD world 配置落脚点。
 
-## 待手写模块
+## 历史存档：当时的待手写模块
 
 当前脚手架仍有以下 4 个故意红灯，它们只代表最初的文件槽位，不再代表学习顺序。
 
@@ -376,7 +594,7 @@ sequenceDiagram
 
 完整章节依赖和准出条件见 `docs/HARNESS_MASTERY_ROADMAP.md`。
 
-## 当前验证状态
+## 历史存档：当时的验证状态
 
 2026-07-10 完整状态：
 
@@ -411,7 +629,7 @@ python -m pytest -q tests\core\test_prompt_pack.py tests\core\test_a2a_bus.py te
 
 结果：4 tests failed，均为预期 `HANDWRITE_TODO`。
 
-## 需要后续清理的平行草稿
+## 历史存档：当时待清理的平行草稿
 
 当前目录里有少量平行草稿文件：
 

@@ -1,14 +1,16 @@
-# Resident A2A v0.1 架构封板
+# Resident A2A v0.1 架构封板（历史快照 / Historical Checkpoint）
 
 > 日期：2026-07-16
-> 状态：实现基线（Architecture Checkpoint）
+> 状态：已冻结的早期实现基线，不代表当前仓库能力
 > 目的：停止继续扩张概念，先做出一条可运行、可观察、可恢复的纵向链路。
+
+> **当前读者提示：** 本文保留 v0.1 当时的范围、术语和准出条件，用于回看架构如何收敛。当前 Team Worker 已进入 Scripted Model 驱动的 canonical AgentLoop，并具备 Assignment/Peer child AgentRun、Builder Wait/Resume、Kernel provenance promotion 与已知失败即时传播。请以 [当前架构走读](ARCHITECTURE_WALKTHROUGH.md) 和 [Durable Supervisor 走读](DURABLE_SUPERVISOR_WALKTHROUGH.md) 为准。
 
 ## 一句话结论
 
-v0.1 是一个常驻的事件驱动多 Agent 控制面：SQLite 保存事实，Scheduler 唤醒逻辑 Agent，Kernel 审核所有候选动作，SSE 把因果过程实时展示给人。
+v0.1 当时定义的是一个常驻事件驱动多 Agent 控制面：SQLite 保存事实，Scheduler 唤醒逻辑 Agent，Kernel 审核所有候选动作，SSE 把因果过程实时展示给人。
 
-## 只记三层
+## 当时只记三层
 
 | 层 | 回答的问题 | v0.1 中看得见的东西 |
 |---|---|---|
@@ -70,7 +72,7 @@ sequenceDiagram
 - 不做多机器一致性、Kafka、Kubernetes 或生产级高可用。
 - 不做无限自治、递归委派或 Agent 之间共享完整 Context。
 - 不展示隐藏思维链，只展示结构化计划、动作、证据和判定理由。
-- 不实现真实 Git Worktree 晋升：当前项目不是 Git 仓库，先保存不可变 Candidate / Release 版本。
+- 当时不实现真实 Git Worktree 晋升，只保存不可变 Candidate / Release 版本。仓库现在已经使用 Git 并托管于 GitHub，但 Evolution 仍停在 Offline Replay，尚未执行真实 Git Promotion。
 - 不实现 Q43 的通用信息增益与实验价值合同；待主链跑通后单独研究。
 
 ## 观察与学习顺序

@@ -109,6 +109,48 @@ class TraceExporter: ...
 8. Evolution 只能提交版本候选，不能直接修改生产行为。
 9. 默认执行环境是 disposable，危险权限 fail-closed。
 10. 任何新增 Harness 机制必须与关闭该机制的基线做同任务对照。
+11. Command 正式 Event、Projection 与 Ledger 终态必须原子提交，不能留下“accepted 但事实只写一半”的状态。
+12. 正式 Event 是持久 Outbox；内存回调不是投递事实，缺少 Mailbox 回执必须可补投。
+
+### 3.3 当前 Team Worker 纵切
+
+当前本地 Team 已经把编排层和认知执行层接到同一条持久事实链上。这里的 **Scripted** 修饰 Model Provider，不再修饰 Worker：Worker 的控制流是真实的 canonical `AgentLoop`，只是模型动作由确定性响应提供，以便重放、故障注入和回归测试。
+
+```mermaid
+flowchart LR
+    EV["外部事件 / External Event"] --> SU["总控策略 / SupervisorPolicy"]
+    SU --> PC["计划候选 / PlanPatch Candidate"]
+    PC --> KE["控制内核 / ControlKernel"]
+    KE --> AL["正式委派与租约 / Assignment + Lease"]
+    AL --> MB["持久邮箱 / Durable Mailbox"]
+    MB --> TW["团队执行器 / TeamWorkerEngine"]
+    TW --> AR["委派子运行 / Assignment child AgentRun"]
+    AR --> LP["规范循环 / canonical AgentLoop"]
+    LP --> RC["结果候选 / Result Candidate"]
+    RC --> KE
+    KE --> RF["正式结果事实 / Evidence · Artifact · Review"]
+
+    LP -->|"Builder 请求一跳对账"| PR["同伴请求 / Peer Request"]
+    PR --> KE
+    KE --> PM["同伴邮箱投递 / Peer Delivery"]
+    PM --> PA["同伴子运行 / Peer child AgentRun"]
+    PA --> PE["摘要与证据引用 / Brief + Evidence Refs"]
+    PE --> KE
+    KE --> BR["镜像响应并恢复 / Mirror + Resume Builder"]
+    BR --> LP
+```
+
+| 当前机制 | 已实现语义 |
+|---|---|
+| Assignment child AgentRun | 每次正式 Assignment 拥有独立 `task_id`、Contract、LocalPlan、Context、模型轨迹、Tool Observation 和 submission，不与根任务或其他 AgentRun 混写。 |
+| Scripted Model + canonical AgentLoop | `FakeModelProvider` 提供可复现动作；`AgentLoop.run_once()` 仍真实执行 Context 编译、Response 持久化、Command 校验、ToolPipeline、CompletionGate 和 Wait/Submit。 |
+| Builder Wait/Resume | `send_message` 后写入 `agent.waiting`；Peer Response 先成为根任务正式事实，再镜像进 Builder child AgentRun，下一次唤醒继续原 Loop。 |
+| Peer child AgentRun | 一跳对账不是同步函数返回，而是接收方独立运行一个受预算、只读 Contract 约束的 AgentLoop。 |
+| Kernel promotion | child submission 只是 Candidate；Kernel 校验 Assignment、活跃 Lease、root task、参与者、AgentRun seed、submission 与 evidence refs 后，才晋升为正式 Team 事实。 |
+| Provenance | 正式结果携带 `agent_run_id`、`submission_event_id` 与 `evidence_refs`；无关 Event、跨 Run 引用、失败 Tool 或错误 actor 不能冒充证据。 |
+| 即时失败传播 | Assignment child 失败/停止/耗尽轮次会立即失败该 Assignment；Peer child 失败、耗尽轮次或 Peer promotion 被拒时，会立即写 `assignment.failed`、释放 Lease 并 Nudge Coordinator，不等待 Deadline。 |
+
+当前仍然是本地确定性纵切：Team 请求会拒绝非 `scripted` 模式；Scheduler 是单消费者；A2A 经过同进程 SQLite EventStore 与 Durable Mailbox。在线 DeepSeek Team、Remote A2A 和真实并发属于后续工作，不应从这张图推断为已经完成。
 
 ## 4. 王牌机制地图
 
@@ -239,16 +281,22 @@ Skill Loader 的 `max_skills=2000`、`max_skill_bytes=1_000_000`、`max_resource
 目标：让 Team 是动态协作，而不是固定 A-B-C 工作流。
 
 - SupervisorPolicy 根据 Task、AgentCard、Budget 与当前事实提交 PlanPatch。
-- CoordinatorKernel 校验和应用 PlanPatch。
+- ControlKernel 校验和应用 PlanPatch。
 - AgentInstance、AgentRun、Assignment、Lease、Deadline、Heartbeat 完整化。
 - 并发 Assignment 与可配置的一跳 PeerTask。
 - TeamView 共享事实，AgentContext 保持私有。
 - A2A 1.0 Server/Client Adapter，接入一个独立进程 Remote Agent。
 - Single vs Team 同任务、同模型、同预算对照。
 
-实施状态（2026-07-18）：第一纵切已完成。Resident Demo 的业务链已移出 Runtime，成为持久化 `TeamContract` 声明式 DAG；`CapabilitySupervisorPolicy` 只读取公共 TeamView、AgentCard、状态、负载和历史 Attempt，提交 `PlanPatch` Candidate。`ControlKernel` 逐项校验 Revision、持久 Contract、依赖、目标、能力、Agent 状态、Attempt、Lease 与并发上限，获准后才产生 Assignment、Lease 和 Mailbox Delivery。Lease 已支持 Acquire、Heartbeat/Renew、Deadline Expire、Agent Degrade、备用 Scout 重派和旧 Delivery fencing；EventLog 可重建相同 Projection。真实 HTTP Golden Run `run_f6a684e9f769` 以 167 条事件完成 evidence -> artifact -> review，并通过 CompletionGate、Dream、Memory Admission 与 Offline Evolution Replay。
+实施状态（2026-07-18）：Durable Supervisor 纵切已完成。Resident Demo 的业务链已移出 Runtime，成为持久化 `TeamContract` 声明式 DAG；`CapabilitySupervisorPolicy` 只读取公共 TeamView、AgentCard、状态、负载和历史 Attempt，提交 `PlanPatch` Candidate。`ControlKernel` 逐项校验 Revision、持久 Contract、依赖、目标、能力、Agent 状态、Attempt、Lease 与并发上限，获准后才产生 Assignment、Lease 和 Mailbox Delivery。Lease 已支持 Acquire、Heartbeat/Renew、Deadline Expire、Agent Degrade、备用 Scout 重派和旧 Delivery fencing；EventLog 可以重建相同 Projection。
 
-尚未完成：Worker 仍使用 Scripted 策略而非各自 canonical AgentLoop；Scheduler 当前单消费者，只证明多个 Assignment 可同时 active，不证明真正并行吞吐；Remote A2A Adapter、跨进程通知和 Single-vs-Team 同预算收益评测仍待后续纵切。Lease 使用 at-least-once 恢复语义，不能宣称分布式 exactly-once；30 秒 Lease 与 `max_parallel_assignments=1` 是初始演示值，待真实任务 Eval 调优。
+Team Worker 纵切也已完成。`TeamWorkerEngine` 为每个 Assignment 创建隔离的 child AgentRun，并逐次唤醒同一 canonical `AgentLoop.run_once()`；Scripted Model 只提供确定性动作，Context 编译、Command Validation、ToolPipeline、OperationLedger、CompletionGate 与 submission 均走真实公共内核。evidence、artifact、review 三个阶段都必须从 child submission 经 Adapter 提交 Candidate，再由 Kernel 校验 AgentRun provenance、活跃 Lease、root task 与 evidence refs 后晋升为正式事实。
+
+Builder 的一跳 A2A 已是持久 Wait/Resume，而非同步函数调用：Builder 写入 `agent.waiting`，Peer Request 经过 Kernel 权限、深度和 Harness-owned budget 校验后持久投递；接收方创建独立 Peer child AgentRun，用只读 Contract 运行 canonical AgentLoop；Peer Response 通过参与者、correlation、AgentRun provenance 与 tool evidence 校验后，镜像回 Builder child AgentRun 并触发下一轮。进程在等待期间重启时，已持久的模型游标与消息事实用于恢复，不重复 Peer Request。Assignment child 失败/停止/轮次耗尽，以及 Peer child 失败、轮次耗尽或 Peer promotion 被拒，都会立即失败请求方 Assignment、释放 Lease 并唤醒 Coordinator 重新规划。
+
+可靠性加固已把 Command 决策 Event、正式 Event、Projection 与 Command Ledger 终态收进同一 SQLite 事务，并把正式 Event 作为持久 Outbox：Kernel finalized 后即使在 Mailbox route 前崩溃，Runtime 也会按 cursor 补投确定性 Delivery。动态 Lease 与 Peer 唯一响应会在 SQLite 写锁内重检，关闭校验/提交 TOCTOU 窗口。AgentRun 的正式结果必须匹配持久 AssignmentContract；Seed 绑定正式 Assignment/Peer Request，Model Request 只能回溯到 Seed 或验证后的 A2A Observation，工具证据必须以 `operation.completed` 收尾并覆盖 Contract 要求。Peer Response 同时校验双方 Capability、self request、Correlation 和 Lease 墙钟。Handler 或调度周期出现普通异常都不会杀死常驻 Runtime；EventStore 暂时不可写时故障诊断进入有界缓冲，恢复后补写。同一 Delivery 连续失败 3 次后进入 Dead Letter，并在根任务身份下确定性终结仍在运行的 Run、Assignment 与 Lease。3 次和 100 条缓冲都是初始防御阈值，待故障数据和 Eval 调优。
+
+尚未完成：Team 的模型提供器仍固定为 Scripted Model，在线 DeepSeek Team 尚未接线；Scheduler 当前单消费者，不证明真正并行吞吐；Remote A2A Adapter、跨进程通知和 Single-vs-Team 同预算收益评测仍待后续纵切。Lease 使用 at-least-once 恢复语义，不能宣称分布式 exactly-once；30 秒 Lease 与 `max_parallel_assignments=1` 是初始演示值，待真实任务 Eval 调优。
 
 准出：进程被 Kill 后没有丢任务和重复副作用；Team 至少在一个 Golden Task 上带来可测收益，否则默认仍用 Single 模式。
 
@@ -373,13 +421,16 @@ crazy-a2a/
 
 ### 8.3 发布节奏
 
+下表按实际行为里程碑重新基线；这里是 Control Plane behavior version，不等同于 Python 包版本。
+
 | 版本 | 对外故事 |
 |---|---|
-| v0.2 | 一个真实 Agent 修复仓库问题，所有动作可验证 |
-| v0.3 | Team 在崩溃后继续协作，并展示一跳 A2A |
-| v0.4 | MCP、Skills、Browser 和 A2A 远端 Agent |
-| v0.5 | Evidence-governed Memory/Dream |
-| v0.6 | Eval、Shadow、Canary、Rollback |
+| v0.2 | MCP 延迟发现、Agent Skills 渐进披露与可审计 Capability Manifest |
+| v0.3 | Browser Evidence Research TaskPack 与引用/Hash Gate |
+| v0.4 | Durable Supervisor、TeamContract DAG、Assignment Lease 与故障转移 |
+| v0.5 | canonical Team Worker、持久 Wait/Resume、原子 Command 与 Event Outbox |
+| v0.6 | 在线 DeepSeek Team、真实并行与 Single-vs-Team 对照 |
+| v0.7 | Remote A2A Adapter、跨进程身份与 attestation |
 | v0.9 | 一键部署、三个 Demo、公开 Benchmark |
 | v1.0 | 稳定接口、迁移策略、社区 Adapter API |
 
