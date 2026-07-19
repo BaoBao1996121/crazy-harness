@@ -82,6 +82,53 @@ def test_event_projection_can_be_rebuilt_from_the_log(tmp_path):
     assert agent["status"] == "busy"
 
 
+def test_agent_card_refresh_preserves_live_runtime_state(tmp_path):
+    store = SQLiteEventStore(tmp_path / "control.db")
+    store.append(
+        event(
+            "agent.registered",
+            event_id="evt-agent-v1",
+            payload={
+                "agent_id": "scout",
+                "role": "Scout",
+                "capabilities": ["evidence.collect"],
+            },
+        )
+    )
+    store.append(
+        event(
+            "runtime.agent.busy",
+            event_id="evt-agent-busy",
+            payload={"agent_id": "scout"},
+        )
+    )
+    store.append(
+        event(
+            "runtime.agent.heartbeat",
+            event_id="evt-agent-heartbeat",
+            payload={"agent_id": "scout", "assignment_id": "assignment-1"},
+        )
+    )
+
+    store.append(
+        event(
+            "agent.registered",
+            event_id="evt-agent-v2",
+            payload={
+                "agent_id": "scout",
+                "role": "Scout / 侦察",
+                "capabilities": ["evidence.collect", "repo.inspect"],
+            },
+        )
+    )
+
+    agent = store.projection("agent", "scout")
+    assert agent is not None
+    assert agent["capabilities"] == ["evidence.collect", "repo.inspect"]
+    assert agent["status"] == "busy"
+    assert agent["active_assignment_id"] == "assignment-1"
+
+
 def test_idle_agent_projection_clears_the_completed_active_assignment(tmp_path):
     store = SQLiteEventStore(tmp_path / "control.db")
     store.append(

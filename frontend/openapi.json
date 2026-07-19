@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.7.0-dev"
+    "version": "0.8.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -44,6 +44,142 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/pairs": {
+      "get": {
+        "summary": "List Eval Pairs",
+        "operationId": "list_eval_pairs_api_evals_pairs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PairedEvalReport"
+                  },
+                  "type": "array",
+                  "title": "Response List Eval Pairs Api Evals Pairs Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Eval Pair",
+        "operationId": "create_eval_pair_api_evals_pairs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairedEvalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairedEvalCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/pairs/{eval_id}": {
+      "get": {
+        "summary": "Get Eval Pair",
+        "operationId": "get_eval_pair_api_evals_pairs__eval_id__get",
+        "parameters": [
+          {
+            "name": "eval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Eval Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairedEvalReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/pairs/{eval_id}/drain": {
+      "post": {
+        "summary": "Drain Eval Pair",
+        "operationId": "drain_eval_pair_api_evals_pairs__eval_id__drain_post",
+        "parameters": [
+          {
+            "name": "eval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Eval Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairedEvalReport"
                 }
               }
             }
@@ -877,6 +1013,14 @@
         "title": "EventRecord",
         "description": "An Event plus its stable, monotonically increasing SSE cursor."
       },
+      "EvidenceTier": {
+        "type": "string",
+        "enum": [
+          "deterministic",
+          "live_paired"
+        ],
+        "title": "EvidenceTier"
+      },
       "EvolutionView": {
         "properties": {
           "candidate_id": {
@@ -1039,6 +1183,7 @@
         ],
         "title": "HealthView"
       },
+      "JsonValue": {},
       "KernelDecision": {
         "properties": {
           "candidate_id": {
@@ -1463,6 +1608,298 @@
         ],
         "title": "ModelCallView"
       },
+      "PairedEvalArm": {
+        "properties": {
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "team"
+            ],
+            "title": "Execution Mode"
+          },
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Run Id"
+          },
+          "workspace": {
+            "type": "string",
+            "format": "path",
+            "title": "Workspace"
+          },
+          "input_hash": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Input Hash"
+          },
+          "model_profile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Model Profile"
+          },
+          "model_budget": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Model Budget"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "execution_mode",
+          "run_id",
+          "workspace",
+          "input_hash",
+          "model_profile",
+          "model_budget"
+        ],
+        "title": "PairedEvalArm",
+        "description": "Immutable identity and resource envelope for one side of an eval pair."
+      },
+      "PairedEvalArmReport": {
+        "properties": {
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "team"
+            ],
+            "title": "Execution Mode"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepoMaintainerScore"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunTraceMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "execution_mode",
+          "run_id",
+          "status"
+        ],
+        "title": "PairedEvalArmReport"
+      },
+      "PairedEvalContract": {
+        "properties": {
+          "eval_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Eval Id"
+          },
+          "case_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Case Id"
+          },
+          "task_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Pack"
+          },
+          "fixture_hash": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Fixture Hash"
+          },
+          "scorer_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Scorer Version"
+          },
+          "evidence_tier": {
+            "$ref": "#/components/schemas/EvidenceTier"
+          },
+          "single": {
+            "$ref": "#/components/schemas/PairedEvalArm"
+          },
+          "team": {
+            "$ref": "#/components/schemas/PairedEvalArm"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "eval_id",
+          "case_id",
+          "task_pack",
+          "fixture_hash",
+          "scorer_version",
+          "evidence_tier",
+          "single",
+          "team"
+        ],
+        "title": "PairedEvalContract",
+        "description": "Fail-closed proof that Single and Team are mechanically comparable."
+      },
+      "PairedEvalCreated": {
+        "properties": {
+          "eval_id": {
+            "type": "string",
+            "title": "Eval Id"
+          },
+          "single_run_id": {
+            "type": "string",
+            "title": "Single Run Id"
+          },
+          "team_run_id": {
+            "type": "string",
+            "title": "Team Run Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "queued",
+            "title": "Status",
+            "default": "queued"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "eval_id",
+          "single_run_id",
+          "team_run_id"
+        ],
+        "title": "PairedEvalCreated"
+      },
+      "PairedEvalReport": {
+        "properties": {
+          "eval_id": {
+            "type": "string",
+            "title": "Eval Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed"
+            ],
+            "title": "Status"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/PairedEvalContract"
+          },
+          "single": {
+            "$ref": "#/components/schemas/PairedEvalArmReport"
+          },
+          "team": {
+            "$ref": "#/components/schemas/PairedEvalArmReport"
+          },
+          "evidence_valid": {
+            "type": "boolean",
+            "title": "Evidence Valid",
+            "default": true
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons",
+            "default": []
+          },
+          "recommendation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamRecommendationDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "eval_id",
+          "status",
+          "contract",
+          "single",
+          "team"
+        ],
+        "title": "PairedEvalReport"
+      },
+      "PairedEvalRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "brief": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Brief"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode",
+            "default": "scripted"
+          },
+          "task_pack": {
+            "type": "string",
+            "const": "repo-maintainer",
+            "title": "Task Pack",
+            "default": "repo-maintainer"
+          },
+          "model_budget": {
+            "$ref": "#/components/schemas/ModelBudgetConfig"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "title",
+          "brief"
+        ],
+        "title": "PairedEvalRequest"
+      },
       "PeerProbeRequest": {
         "properties": {
           "run_id": {
@@ -1589,6 +2026,62 @@
         ],
         "title": "RebuildResult"
       },
+      "RecommendationOutcome": {
+        "type": "string",
+        "enum": [
+          "insufficient_live_evidence",
+          "recommend_team",
+          "keep_single"
+        ],
+        "title": "RecommendationOutcome"
+      },
+      "RepoMaintainerScore": {
+        "properties": {
+          "scorer_version": {
+            "type": "string",
+            "title": "Scorer Version",
+            "default": "repo-maintainer-v2"
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed"
+          },
+          "score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Score"
+          },
+          "checks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "title": "Checks"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Files"
+          },
+          "test_output": {
+            "type": "string",
+            "title": "Test Output",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "passed",
+          "score",
+          "checks",
+          "changed_files"
+        ],
+        "title": "RepoMaintainerScore"
+      },
       "RunCreated": {
         "properties": {
           "run_id": {
@@ -1611,6 +2104,150 @@
           "task_id"
         ],
         "title": "RunCreated"
+      },
+      "RunTraceMetrics": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "terminal_status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Terminal Status"
+          },
+          "terminal_event_id": {
+            "type": "string",
+            "title": "Terminal Event Id"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Ms"
+          },
+          "model_requests": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Requests"
+          },
+          "model_completions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Completions"
+          },
+          "physical_model_attempts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Physical Model Attempts"
+          },
+          "tool_requests": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Tool Requests"
+          },
+          "tool_completions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Tool Completions"
+          },
+          "operations_started": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Operations Started"
+          },
+          "operations_completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Operations Completed"
+          },
+          "a2a_requests": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "A2A Requests"
+          },
+          "a2a_responses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "A2A Responses"
+          },
+          "assignment_failures": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Assignment Failures"
+          },
+          "assignment_retries": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Assignment Retries"
+          },
+          "operation_unknowns": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Operation Unknowns"
+          },
+          "model_unknown_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Unknown Calls"
+          },
+          "dead_letters": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Dead Letters"
+          },
+          "spent_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Spent Tokens"
+          },
+          "committed_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Committed Tokens"
+          },
+          "spent_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Spent Cost Microusd"
+          },
+          "committed_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Committed Cost Microusd"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "terminal_status",
+          "terminal_event_id",
+          "duration_ms",
+          "model_requests",
+          "model_completions",
+          "physical_model_attempts",
+          "tool_requests",
+          "tool_completions",
+          "operations_started",
+          "operations_completed",
+          "a2a_requests",
+          "a2a_responses",
+          "assignment_failures",
+          "assignment_retries",
+          "operation_unknowns",
+          "model_unknown_calls",
+          "dead_letters",
+          "spent_tokens",
+          "committed_tokens",
+          "spent_cost_microusd",
+          "committed_cost_microusd"
+        ],
+        "title": "RunTraceMetrics",
+        "description": "Replay-stable metrics derived only from durable events and budget facts."
       },
       "RunView": {
         "properties": {
@@ -1909,6 +2546,32 @@
           "brief"
         ],
         "title": "TaskRequest"
+      },
+      "TeamRecommendationDecision": {
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/RecommendationOutcome"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "failed_thresholds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Thresholds",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "title": "TeamRecommendationDecision"
       },
       "ValidationError": {
         "properties": {

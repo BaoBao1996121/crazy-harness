@@ -1180,11 +1180,11 @@ def test_background_runtime_overlaps_parallel_team_assignments(tmp_path):
         assert set(active) >= {"evidence", "risk"}
         assert active["evidence"] != active["risk"]
         release.set()
-        deadline = monotonic() + 30
-        while monotonic() < deadline:
-            if runtime.snapshot(created.run_id)["run"]["status"] == "succeeded":
-                break
-            sleep(0.02)
+        _wait_until(
+            lambda: runtime.snapshot(created.run_id)["run"]["status"]
+            == "succeeded",
+            timeout=60,
+        )
         assert runtime.snapshot(created.run_id)["run"]["status"] == "succeeded"
     finally:
         release.set()

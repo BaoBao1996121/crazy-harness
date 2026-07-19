@@ -178,6 +178,22 @@ class PersistentModelCallAuthority:
             - timedelta(seconds=self.STALE_CALL_SECONDS),
         )
         model = str(getattr(provider, "model", "deepseek-v4-flash"))
+        attestation = getattr(provider, "attestation_profile", None)
+        provider_profile = (
+            attestation()
+            if callable(attestation)
+            else {
+                "provider": type(provider).__name__,
+                "model": model,
+                "max_output_tokens": int(
+                    getattr(
+                        provider,
+                        "max_tokens",
+                        budget.max_output_tokens_per_call,
+                    )
+                ),
+            }
+        )
         price = _price_card(model)
         output_tokens = int(
             getattr(provider, "max_tokens", budget.max_output_tokens_per_call)
@@ -212,6 +228,7 @@ class PersistentModelCallAuthority:
                 {
                     "call_id": request_event.id,
                     "model": model,
+                    "provider_profile": provider_profile,
                     "reserved_input_tokens": input_tokens,
                     "reserved_output_tokens": output_tokens,
                     "reserved_cost_microusd": reserved_cost,

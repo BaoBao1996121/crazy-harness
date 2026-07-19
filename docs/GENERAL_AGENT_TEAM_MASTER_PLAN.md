@@ -317,7 +317,9 @@ v0.6 受控并发纵切已经完成。TeamContract 现在包含 evidence 与 ris
 
 v0.7 在线 Team 模型治理纵切已经完成代码与确定性合同验证。根 Run 的 `model_mode` 会为每个 Assignment/Peer child AgentRun 重建独立 Provider；`PersistentModelCallAuthority` 在发送 HTTP 前用 SQLite 短事务原子预约 Token、估算费用和并发槽，持久记录 Attempt，并在 `model.completed` 后按唯一 Completion Event 幂等核销 usage。只有 429、500、503、连接失败和连接超时进入 Provider 有界重试；ReadTimeout 等结果不确定窗口进入 `unknown` 并保留悲观额度。Provider 重试耗尽产生运行级 `run.failure.requested`，恢复可补齐 Run/Assignment/Lease/Mailbox 终态；普通 Stage 重派另受 `max_stage_attempts=3` 初始预算约束，避免 Provider、Scheduler、Supervisor 三层重试相乘。Control Room 已新增模型预算和调用账本视图。完整实现和边界见 `ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md`。
 
-尚未完成：本机没有 `DEEPSEEK_API_KEY`，所以 Team 的付费在线 Smoke 仍是外部门槛；Remote A2A Adapter、真正的数据库通知/消息代理、分布式公平性和 Single-vs-Team 同预算收益评测仍待后续纵切。当前共享 SQLite 通过最多 1 秒的有界检查发现其他进程写入或 Claim 到期，这保证本地多 Runtime 活性但不是远程 Broker；Round-Robin cursor 仍是进程内事实。外部 HTTP 副作用也不能由 Fencing 撤回，仍依赖 OperationLedger、业务幂等键或对账。Assignment Lease 使用 at-least-once 恢复语义，不能宣称分布式 exactly-once；每个 Scheduler 进程总并发 `2`、跨 Scheduler 单 Agent 持久并发 `1`、Work Claim TTL `180s`、外部写入检查 `1s`、Team 最大并行 Assignment `2` 与 Stage Attempt `3` 都是初始配置值，待真实任务 Eval 和压力数据调优。当前还没有跨进程共享 Global Slot，因此多个 Scheduler 处理不同 Agent 时的总并发可超过单进程 `2`。
+v0.8 公平配对评测纵切已经完成确定性加固版。`repo-maintainer` 现在同时提供 Single 与 Scout -> Builder -> Reviewer Team 路径；两臂由持久 `EvalPair` 约束同 `case_id/fixture_hash`、同包含 title/brief 的完整 `input_hash`、同完整推理 `model_profile`、同每臂总预算和同 Scorer 版本，并使用隔离工作区。创建采用 Requested -> Prepare -> Commit -> Release，响应丢失后复用原 Eval/Run；评分由 SQLite Claim 唯一化，GET/list 保持纯读。`RepoMaintainerScorer` v2 只信代码内置 Fixture，先核对 Baseline 与测试未被替换，再运行真实测试并检查预期源码、Diff 和允许修改范围，不读取 Agent 自述。Live Pair 还要求每次 `model.call.reserved` 的 Provider、模型、端点、Thinking、采样约束、输出上限和超时与契约完全一致。`RunTraceAggregator` 从 EventStore 与 Model Ledger 统计模型、工具、Operation、A2A、Unknown、Token、费用和延迟。HTTP API 与 Control Room 共用同一个 `eval_id`，可在两条完整 Run Timeline 间切换。确定性 Pair 强制输出 `insufficient_live_evidence`；实现、证据和边界见 `SINGLE_VS_TEAM_EVAL_DESIGN.md`。
+
+尚未完成：本机没有 `DEEPSEEK_API_KEY`，所以 Team 的付费在线 Smoke 和 `live_paired` 多 Trial 仍是外部门槛；当前每个 Pair 只产生一条报告，还没有跨 Pair Campaign 聚合、方差/置信区间和可晋升的统计推荐。Remote A2A Adapter、真正的数据库通知/消息代理和分布式公平性也仍待后续纵切。当前共享 SQLite 通过最多 1 秒的有界检查发现其他进程写入或 Claim 到期，这保证本地多 Runtime 活性但不是远程 Broker；Round-Robin cursor 仍是进程内事实。外部 HTTP 副作用也不能由 Fencing 撤回，仍依赖 OperationLedger、业务幂等键或对账。Assignment Lease 使用 at-least-once 恢复语义，不能宣称分布式 exactly-once；每个 Scheduler 进程总并发 `2`、跨 Scheduler 单 Agent 持久并发 `1`、Work Claim TTL `180s`、外部写入检查 `1s`、Team 最大并行 Assignment `2` 与 Stage Attempt `3` 都是初始配置值，待真实任务 Eval 和压力数据调优。当前还没有跨进程共享 Global Slot，因此多个 Scheduler 处理不同 Agent 时的总并发可超过单进程 `2`。
 
 准出：进程被 Kill 后没有丢任务和重复副作用；Team 至少在一个 Golden Task 上带来可测收益，否则默认仍用 Single 模式。
 
@@ -451,9 +453,10 @@ crazy-a2a/
 | v0.4 | Durable Supervisor、TeamContract DAG、Assignment Lease 与故障转移 |
 | v0.5 | canonical Team Worker、持久 Wait/Resume、原子 Command 与 Event Outbox |
 | v0.6 | 受控并发、持久背压、Claim/Renew/Fencing、协作取消与可观测调度 |
-| v0.7 | 在线 DeepSeek Team 与持久限流/成本治理已完成代码和确定性合同验证；付费 Smoke、Single-vs-Team 对照待完成 |
-| v0.8 | Remote A2A Adapter、跨进程身份与 attestation |
-| v0.9 | 一键部署、三个 Demo、公开 Benchmark |
+| v0.7 | 在线 DeepSeek Team 与持久限流/成本治理；付费 Smoke 仍是外部门槛 |
+| v0.8 | 同题 Single-vs-Team 公平配对、独立 Scorer、持久 Trace 报告与 Control Room 对照视图 |
+| v0.9 | Remote A2A Adapter、跨进程身份与 attestation |
+| v0.10 | 一键部署、三个 Demo、公开 Benchmark |
 | v1.0 | 稳定接口、迁移策略、社区 Adapter API |
 
 ### 8.4 Star 不是 KPI

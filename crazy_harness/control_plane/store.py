@@ -1124,19 +1124,22 @@ class SQLiteEventStore:
 
         if event.type == "agent.registered":
             agent_id = str(event.payload["agent_id"])
+            state = self._load_projection(connection, "agent", agent_id) or {
+                "agent_id": agent_id,
+                "status": "idle",
+                "mailbox_pending": 0,
+            }
+            state.update(
+                role=event.payload.get("role", agent_id.title()),
+                capabilities=event.payload.get("capabilities", []),
+                max_concurrency=int(event.payload.get("max_concurrency", 1)),
+                updated_at=event.created_at.isoformat(),
+            )
             self._save_projection(
                 connection,
                 "agent",
                 agent_id,
-                {
-                    "agent_id": agent_id,
-                    "role": event.payload.get("role", agent_id.title()),
-                    "capabilities": event.payload.get("capabilities", []),
-                    "status": "idle",
-                    "max_concurrency": int(event.payload.get("max_concurrency", 1)),
-                    "mailbox_pending": 0,
-                    "updated_at": event.created_at.isoformat(),
-                },
+                state,
                 seq,
             )
         elif event.type.startswith("runtime.agent."):

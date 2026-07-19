@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -142,11 +143,7 @@ def build_repo_tools(
             output_offload_policy="offload_if_large",
             is_concurrency_safe=False,
         ),
-        lambda _: _run_command(
-            "test.run",
-            runtime,
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
-        ),
+        lambda _: _run_tests(runtime, root),
     )
     registry.register(
         ToolSpec(
@@ -272,6 +269,20 @@ def _run_shell_profile(runtime: GuardedLocalRuntime, profile: str) -> ToolResult
     return _run_command("shell.run", runtime, [sys.executable, "-m", "compileall", "-q", "."])
 
 
+def _run_tests(runtime: GuardedLocalRuntime, root: Path) -> ToolResult:
+    # Atomic same-size rewrites can share a timestamp tick on Windows. Remove only
+    # bytecode caches inside the disposable root so tests always import current source.
+    for candidate in tuple(root.rglob("__pycache__")):
+        resolved = candidate.resolve()
+        if candidate.is_dir() and resolved.is_relative_to(root):
+            shutil.rmtree(resolved)
+    return _run_command(
+        "test.run",
+        runtime,
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+    )
+
+
 def _run_command(name: str, runtime: GuardedLocalRuntime, argv: list[str]) -> ToolResult:
     try:
         completed = runtime.run(argv, timeout_seconds=60)
@@ -305,7 +316,7 @@ def _require_writable(relative: str, writable_paths: frozenset[str]) -> None:
 def _atomic_write(target: Path, content: str) -> None:
     temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
     try:
-        temporary.write_text(content, encoding="utf-8")
+        temporary.write_bytes(content.encode("utf-8"))
         # Windows 的索引器/防病毒软件可能短暂占用目标文件。这里的 3 次是初始工程值；
         # 只重试原子 rename 的 PermissionError，不重做模型调用或其他外部副作用。
         for attempt in range(len(_ATOMIC_REPLACE_RETRY_SECONDS) + 1):

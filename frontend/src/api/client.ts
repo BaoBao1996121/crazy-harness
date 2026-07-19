@@ -7,12 +7,27 @@ export type RunCreated = components["schemas"]["RunCreated"];
 export type CancelResult = components["schemas"]["CancelResult"];
 export type TaskRequest = components["schemas"]["TaskRequest"];
 export type KernelDecision = components["schemas"]["KernelDecision"];
+export type PairedEvalRequest = components["schemas"]["PairedEvalRequest"];
+export type PairedEvalDraft = Omit<PairedEvalRequest, "request_id">;
+export type PairedEvalCreated = components["schemas"]["PairedEvalCreated"];
+export type PairedEvalReport = components["schemas"]["PairedEvalReport"];
+export type PairedEvalArmReport = components["schemas"]["PairedEvalArmReport"];
 export type FaultPoint =
   | "after_candidate_persisted"
   | "after_model_persisted"
   | "after_command_persisted"
   | "after_tool_effect"
   | "before_mailbox_ack";
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -21,12 +36,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail));
+    const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    throw new ApiError(detail, response.status);
   }
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  createEvalPair: (body: PairedEvalRequest) =>
+    request<PairedEvalCreated>("/api/evals/pairs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listEvalPairs: () => request<PairedEvalReport[]>("/api/evals/pairs"),
+  evalPair: (evalId: string) =>
+    request<PairedEvalReport>(`/api/evals/pairs/${encodeURIComponent(evalId)}`),
+  drainEvalPair: (evalId: string) =>
+    request<PairedEvalReport>(`/api/evals/pairs/${encodeURIComponent(evalId)}/drain`, {
+      method: "POST",
+    }),
   createRun: (body: TaskRequest) =>
     request<RunCreated>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   drainRun: (runId: string) =>

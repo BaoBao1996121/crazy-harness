@@ -39,6 +39,11 @@ class ResidentDemoTeamTaskPack:
     }
     _PEER_TOOL = "team.peer.request.inspect"
 
+    @staticmethod
+    def prepare_run(run_id: str) -> dict[str, object]:
+        del run_id
+        return {}
+
     def team_contract(self) -> TeamContract:
         stages = (
             TeamStageSpec(
@@ -451,6 +456,8 @@ class ResidentDemoTeamTaskPack:
         plan_steps: tuple[str, ...],
         message_handler: MessageHandler | None,
         fault_injector: Callable[[str], None] | None,
+        approved_tools: frozenset[str] = frozenset(),
+        destructive_modes: tuple[str, ...] = (),
     ) -> AgentLoop:
         plan = LocalPlan(
             version=1,
@@ -500,7 +507,7 @@ class ResidentDemoTeamTaskPack:
         )
         pipeline = ToolPipeline(
             tools,
-            policy=ToolPolicy(),
+            policy=ToolPolicy(destructive_modes=destructive_modes),
             ledger=OperationLedger(ledger_path),
         )
         return AgentLoop(
@@ -529,6 +536,7 @@ class ResidentDemoTeamTaskPack:
                 assignment_id=assignment_id,
                 mode=model_mode,
                 allowed_tools=frozenset(spec.name for spec in tools.specs()),
+                approved_tools=approved_tools,
             ),
             message_handler=message_handler,
             capability_compiler=CapabilityCompiler(

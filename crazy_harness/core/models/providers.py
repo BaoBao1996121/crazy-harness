@@ -112,6 +112,19 @@ class DeepSeekOpenAIProvider:
         self.user_id = user_id
         self.transport = transport
 
+    def attestation_profile(self) -> dict[str, str | int | float]:
+        """Return the inference-affecting configuration used for fair evals."""
+
+        return {
+            "provider": type(self).__name__,
+            "model": self.model,
+            "base_url": self.base_url,
+            "thinking_mode": self.thinking_mode,
+            "sampling_control": "provider_default_unseeded",
+            "max_output_tokens": self.max_tokens,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
     def complete(
         self,
         messages: list[ModelMessage],
