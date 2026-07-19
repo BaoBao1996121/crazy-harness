@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 from crazy_harness.control_plane.api import create_app
+from crazy_harness.control_plane.paired_evals import PairedEvalCreationRejected
+from crazy_harness.control_plane.runtime import ResidentRuntime
 
 
 def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
@@ -10,7 +12,68 @@ def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json()["version"] == "v0.7.0-dev"
+    assert response.json()["version"] == "v0.8.0-dev"
+
+
+def test_http_tells_client_when_a_failed_pair_requires_a_new_request_id(
+    tmp_path,
+    monkeypatch,
+):
+    def reject_creation(_runtime, _request):
+        raise PairedEvalCreationRejected("pair preparation failed")
+
+    monkeypatch.setattr(ResidentRuntime, "create_paired_eval", reject_creation)
+    app = create_app(tmp_path, background=False)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/evals/pairs",
+            json={
+                "request_id": "api-terminal-pair-1",
+                "title": "Compare repair",
+                "brief": "Repair the same fixture.",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "paired_eval_creation_rejected",
+        "message": "pair preparation failed",
+    }
+
+
+@pytest.mark.smoke
+def test_http_can_run_and_replay_a_single_vs_team_eval_pair(tmp_path):
+    app = create_app(tmp_path, background=False)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/evals/pairs",
+            json={
+                "request_id": "api-fair-pair-1",
+                "title": "Compare clamp repair",
+                "brief": "Repair clamp without changing tests.",
+                "model_mode": "scripted",
+            },
+        )
+        assert created.status_code == 201
+        eval_id = created.json()["eval_id"]
+
+        before_drain = client.get(f"/api/evals/pairs/{eval_id}")
+        drained = client.post(f"/api/evals/pairs/{eval_id}/drain")
+        replay = client.get(f"/api/evals/pairs/{eval_id}")
+        listed = client.get("/api/evals/pairs")
+
+    assert drained.status_code == 200
+    assert before_drain.status_code == 200
+    assert before_drain.json()["status"] == "running"
+    assert replay.status_code == 200
+    assert replay.json() == drained.json()
+    assert replay.json()["status"] == "completed"
+    assert replay.json()["single"]["score"]["passed"] is True
+    assert replay.json()["team"]["score"]["passed"] is True
+    assert replay.json()["recommendation"]["outcome"] == (
+        "insufficient_live_evidence"
+    )
+    assert [item["eval_id"] for item in listed.json()] == [eval_id]
 
 
 @pytest.mark.smoke

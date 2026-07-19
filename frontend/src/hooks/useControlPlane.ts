@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type EventRecord, type FaultPoint, type Snapshot, type TaskRequest } from "../api/client";
 import { createAsyncThrottle } from "../lib/throttle";
+import { mergeSearchParam } from "../lib/urlState";
 
 type StreamState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -20,6 +21,15 @@ const rememberedRun = () => resolveInitialRunId(
   window.location.search,
   window.localStorage.getItem("crazy.activeRun"),
 );
+
+function replaceRunInLocation(runId: string | undefined): void {
+  const search = mergeSearchParam(window.location.search, "run", runId);
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${search}${window.location.hash}`,
+  );
+}
 
 export function useControlPlane() {
   const [runId, setRunId] = useState<string | undefined>(rememberedRun);
@@ -41,7 +51,7 @@ export function useControlPlane() {
         window.localStorage.setItem("crazy.activeRun", next.run.run_id);
         if (!targetRun) {
           setRunId(next.run.run_id);
-          window.history.replaceState(null, "", `?run=${encodeURIComponent(next.run.run_id)}`);
+          replaceRunInLocation(next.run.run_id);
         }
       }
     } catch (error) {
@@ -49,6 +59,7 @@ export function useControlPlane() {
       if (targetRun) {
         window.localStorage.removeItem("crazy.activeRun");
         setRunId(undefined);
+        replaceRunInLocation(undefined);
       }
     }
   }, [runId]);
@@ -113,23 +124,27 @@ export function useControlPlane() {
     };
   }, [refreshSnapshot, runId]);
 
+  const selectRun = useCallback((nextRunId: string) => {
+    cursorRef.current = 0;
+    setEvents([]);
+    setSelectedId(null);
+    setFollowLive(true);
+    setRunId(nextRunId);
+    window.localStorage.setItem("crazy.activeRun", nextRunId);
+    replaceRunInLocation(nextRunId);
+  }, []);
+
   const createRun = useCallback(async (request: TaskRequest) => {
     setBusy(true);
     setNotice(null);
     try {
       const created = await api.createRun(request);
-      cursorRef.current = 0;
-      setEvents([]);
-      setSelectedId(null);
-      setFollowLive(true);
-      setRunId(created.run_id);
-      window.localStorage.setItem("crazy.activeRun", created.run_id);
-      window.history.replaceState(null, "", `?run=${encodeURIComponent(created.run_id)}`);
+      selectRun(created.run_id);
       return created;
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [selectRun]);
 
   const cancelRun = useCallback(async () => {
     if (!runId) return;
@@ -212,6 +227,7 @@ export function useControlPlane() {
     busy,
     notice,
     setNotice,
+    selectRun,
     createRun,
     cancelRun,
     armFault,

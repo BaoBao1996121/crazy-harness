@@ -7,6 +7,7 @@ import {
   Gauge,
   ListTodo,
   Radio,
+  Scale,
   Waves,
 } from "lucide-react";
 
@@ -20,6 +21,7 @@ interface TopBarProps {
   eventCount: number;
   busy: boolean;
   onNewRun: () => void;
+  onNewEval: () => void;
   onCancel: () => void;
   onChaos: () => void;
 }
@@ -30,6 +32,7 @@ export function TopBar({
   eventCount,
   busy,
   onNewRun,
+  onNewEval,
   onCancel,
   onChaos,
 }: TopBarProps) {
@@ -105,6 +108,15 @@ export function TopBar({
         <button className="icon-command secondary" onClick={onChaos} title="打开故障实验 / Open Chaos Lab">
           <FlaskConical size={17} aria-hidden="true" />
           <span>故障实验</span>
+        </button>
+        <button
+          className="icon-command eval-command"
+          onClick={onNewEval}
+          disabled={busy}
+          title="创建公平评测 / Create fair eval"
+        >
+          <Scale size={17} aria-hidden="true" />
+          <span>公平评测 / Eval</span>
         </button>
         <button
           className="icon-command primary"

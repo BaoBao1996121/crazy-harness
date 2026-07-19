@@ -38,6 +38,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/evals/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Eval Pairs */
+        get: operations["list_eval_pairs_api_evals_pairs_get"];
+        put?: never;
+        /** Create Eval Pair */
+        post: operations["create_eval_pair_api_evals_pairs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/evals/pairs/{eval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Eval Pair */
+        get: operations["get_eval_pair_api_evals_pairs__eval_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/evals/pairs/{eval_id}/drain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drain Eval Pair */
+        post: operations["drain_eval_pair_api_evals_pairs__eval_id__drain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/drain": {
         parameters: {
             query?: never;
@@ -381,6 +433,11 @@ export interface components {
             cursor: number;
             event: components["schemas"]["Event"];
         };
+        /**
+         * EvidenceTier
+         * @enum {string}
+         */
+        EvidenceTier: "deterministic" | "live_paired";
         /** EvolutionView */
         EvolutionView: {
             /** Candidate Id */
@@ -437,6 +494,7 @@ export interface components {
             /** Version */
             version: string;
         };
+        JsonValue: unknown;
         /** KernelDecision */
         KernelDecision: {
             /** Candidate Id */
@@ -596,6 +654,128 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * PairedEvalArm
+         * @description Immutable identity and resource envelope for one side of an eval pair.
+         */
+        PairedEvalArm: {
+            /**
+             * Execution Mode
+             * @enum {string}
+             */
+            execution_mode: "single" | "team";
+            /** Run Id */
+            run_id: string;
+            /**
+             * Workspace
+             * Format: path
+             */
+            workspace: string;
+            /** Input Hash */
+            input_hash: string;
+            /** Model Profile */
+            model_profile: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Model Budget */
+            model_budget: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+        };
+        /** PairedEvalArmReport */
+        PairedEvalArmReport: {
+            /**
+             * Execution Mode
+             * @enum {string}
+             */
+            execution_mode: "single" | "team";
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+            score?: components["schemas"]["RepoMaintainerScore"] | null;
+            trace?: components["schemas"]["RunTraceMetrics"] | null;
+        };
+        /**
+         * PairedEvalContract
+         * @description Fail-closed proof that Single and Team are mechanically comparable.
+         */
+        PairedEvalContract: {
+            /** Eval Id */
+            eval_id: string;
+            /** Case Id */
+            case_id: string;
+            /** Task Pack */
+            task_pack: string;
+            /** Fixture Hash */
+            fixture_hash: string;
+            /** Scorer Version */
+            scorer_version: string;
+            evidence_tier: components["schemas"]["EvidenceTier"];
+            single: components["schemas"]["PairedEvalArm"];
+            team: components["schemas"]["PairedEvalArm"];
+        };
+        /** PairedEvalCreated */
+        PairedEvalCreated: {
+            /** Eval Id */
+            eval_id: string;
+            /** Single Run Id */
+            single_run_id: string;
+            /** Team Run Id */
+            team_run_id: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+        };
+        /** PairedEvalReport */
+        PairedEvalReport: {
+            /** Eval Id */
+            eval_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "completed";
+            contract: components["schemas"]["PairedEvalContract"];
+            single: components["schemas"]["PairedEvalArmReport"];
+            team: components["schemas"]["PairedEvalArmReport"];
+            /**
+             * Evidence Valid
+             * @default true
+             */
+            evidence_valid: boolean;
+            /**
+             * Invalid Reasons
+             * @default []
+             */
+            invalid_reasons: string[];
+            recommendation?: components["schemas"]["TeamRecommendationDecision"] | null;
+        };
+        /** PairedEvalRequest */
+        PairedEvalRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Title */
+            title: string;
+            /** Brief */
+            brief: string;
+            /**
+             * Model Mode
+             * @default scripted
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            /**
+             * Task Pack
+             * @default repo-maintainer
+             * @constant
+             */
+            task_pack: "repo-maintainer";
+            model_budget?: components["schemas"]["ModelBudgetConfig"];
+        };
         /** PeerProbeRequest */
         PeerProbeRequest: {
             /** Run Id */
@@ -637,6 +817,34 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * RecommendationOutcome
+         * @enum {string}
+         */
+        RecommendationOutcome: "insufficient_live_evidence" | "recommend_team" | "keep_single";
+        /** RepoMaintainerScore */
+        RepoMaintainerScore: {
+            /**
+             * Scorer Version
+             * @default repo-maintainer-v2
+             */
+            scorer_version: string;
+            /** Passed */
+            passed: boolean;
+            /** Score */
+            score: number;
+            /** Checks */
+            checks: {
+                [key: string]: boolean;
+            };
+            /** Changed Files */
+            changed_files: string[];
+            /**
+             * Test Output
+             * @default
+             */
+            test_output: string;
+        };
         /** RunCreated */
         RunCreated: {
             /** Run Id */
@@ -648,6 +856,59 @@ export interface components {
              * @default queued
              */
             status: string;
+        };
+        /**
+         * RunTraceMetrics
+         * @description Replay-stable metrics derived only from durable events and budget facts.
+         */
+        RunTraceMetrics: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Terminal Status
+             * @enum {string}
+             */
+            terminal_status: "succeeded" | "failed" | "cancelled";
+            /** Terminal Event Id */
+            terminal_event_id: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Model Requests */
+            model_requests: number;
+            /** Model Completions */
+            model_completions: number;
+            /** Physical Model Attempts */
+            physical_model_attempts: number;
+            /** Tool Requests */
+            tool_requests: number;
+            /** Tool Completions */
+            tool_completions: number;
+            /** Operations Started */
+            operations_started: number;
+            /** Operations Completed */
+            operations_completed: number;
+            /** A2A Requests */
+            a2a_requests: number;
+            /** A2A Responses */
+            a2a_responses: number;
+            /** Assignment Failures */
+            assignment_failures: number;
+            /** Assignment Retries */
+            assignment_retries: number;
+            /** Operation Unknowns */
+            operation_unknowns: number;
+            /** Model Unknown Calls */
+            model_unknown_calls: number;
+            /** Dead Letters */
+            dead_letters: number;
+            /** Spent Tokens */
+            spent_tokens: number;
+            /** Committed Tokens */
+            committed_tokens: number;
+            /** Spent Cost Microusd */
+            spent_cost_microusd: number;
+            /** Committed Cost Microusd */
+            committed_cost_microusd: number;
         };
         /** RunView */
         RunView: {
@@ -754,6 +1015,17 @@ export interface components {
             task_pack?: ("resident-demo" | "repo-maintainer" | "evidence-research") | null;
             model_budget?: components["schemas"]["ModelBudgetConfig"];
         };
+        /** TeamRecommendationDecision */
+        TeamRecommendationDecision: {
+            outcome: components["schemas"]["RecommendationOutcome"];
+            /** Reason */
+            reason: string;
+            /**
+             * Failed Thresholds
+             * @default []
+             */
+            failed_thresholds: string[];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -835,6 +1107,121 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_eval_pairs_api_evals_pairs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairedEvalReport"][];
+                };
+            };
+        };
+    };
+    create_eval_pair_api_evals_pairs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairedEvalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairedEvalCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_eval_pair_api_evals_pairs__eval_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairedEvalReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    drain_eval_pair_api_evals_pairs__eval_id__drain_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairedEvalReport"];
                 };
             };
             /** @description Validation Error */

@@ -27,6 +27,14 @@ from crazy_harness.control_plane.model_governance import (
     ModelBudgetConfig,
     PersistentModelCallAuthority,
 )
+from crazy_harness.control_plane.paired_evals import (
+    EvalRunIdentity,
+    PairedEvalCreated,
+    PairedEvalReport,
+    PairedEvalRequest,
+    PairedEvalService,
+    paired_input_hash,
+)
 from crazy_harness.control_plane.store import (
     SQLiteEventStore,
     UnfencedAckError,
@@ -59,6 +67,7 @@ from crazy_harness.core.runtime.mailbox import Delivery
 from crazy_harness.taskpacks import (
     EvidenceResearchTaskPack,
     RepoMaintainerTaskPack,
+    RepoMaintainerTeamTaskPack,
     ResidentDemoTeamTaskPack,
     TaskPack,
 )
@@ -1129,17 +1138,31 @@ class ResidentRuntime:
             "Coordinator / 总控",
             ["orchestration.plan", "completion.gate"],
         ),
-        ("scout", "Scout / 侦察", ["evidence.collect", "peer.respond"]),
+        (
+            "scout",
+            "Scout / 侦察",
+            ["evidence.collect", "repo.inspect", "peer.respond"],
+        ),
         (
             "scout-backup",
             "Scout Backup / 侦察备用",
-            ["evidence.collect", "peer.respond"],
+            ["evidence.collect", "repo.inspect", "peer.respond"],
         ),
-        ("builder", "Builder / 构建", ["artifact.compose", "peer.request"]),
+        (
+            "builder",
+            "Builder / 构建",
+            ["artifact.compose", "repo.edit", "test.verify", "peer.request"],
+        ),
         (
             "reviewer",
             "Reviewer / 审查",
-            ["artifact.review", "evidence.verify", "peer.respond"],
+            [
+                "artifact.review",
+                "evidence.verify",
+                "repo.review",
+                "test.verify",
+                "peer.respond",
+            ],
         ),
         (
             "generalist",
@@ -1165,6 +1188,7 @@ class ResidentRuntime:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteEventStore(self.data_dir / "control_plane.db")
+        self.eval_service = PairedEvalService(self.store)
         self.model_call_authority = PersistentModelCallAuthority(self.store)
         self.artifacts = ArtifactStore(self.data_dir / "artifacts")
         self.faults = FaultController()
@@ -1173,6 +1197,11 @@ class ResidentRuntime:
         self.scheduler = ResidentScheduler(self.store, self.faults)
         self.team_pack = ResidentDemoTeamTaskPack()
         self.team_contract = self.team_pack.team_contract()
+        self.repo_maintainer_team_pack = RepoMaintainerTeamTaskPack(self.data_dir)
+        self.team_task_packs: dict[str, ResidentDemoTeamTaskPack] = {
+            self.team_pack.task_pack_id: self.team_pack,
+            self.repo_maintainer_team_pack.task_pack_id: self.repo_maintainer_team_pack,
+        }
         self.supervisor_policy = supervisor_policy or CapabilitySupervisorPolicy()
         self.repo_maintainer_pack = RepoMaintainerTaskPack(self.data_dir)
         self.evidence_research_pack = EvidenceResearchTaskPack(self.data_dir)
@@ -1206,6 +1235,7 @@ class ResidentRuntime:
             ),
             fail_run=self._fail_team_run_from_model,
             model_factory=team_model_factory,
+            task_pack_resolver=self.team_task_pack_for,
             model_call_authority=self.model_call_authority,
             fault_injector=self.faults.trip,
         )
@@ -1237,6 +1267,12 @@ class ResidentRuntime:
         )
         self._route_cursor = 0
         self._route_lock = threading.RLock()
+        self.eval_service.recover_pending(
+            resume=lambda request: self.create_paired_eval(
+                request,
+                recovering=True,
+            )
+        )
         self._reconcile_routes()
         self._reconcile_failed_runs()
 
@@ -1274,6 +1310,9 @@ class ResidentRuntime:
                 self._reconcile_failed_runs()
                 stage = "cancellation_reconciliation"
                 self._reconcile_cancellations()
+                stage = "paired_eval_finalization"
+                if self.eval_service.finalize_ready():
+                    continue
                 stage = "lease_expiry"
                 if self.expire_due_leases():
                     continue
@@ -1318,11 +1357,95 @@ class ResidentRuntime:
     def submit_task(self, request: TaskRequest) -> RunCreated:
         if request.execution_mode == "single":
             return self._submit_single_task(request)
-        if request.task_pack not in {None, "resident-demo"}:
-            raise ValueError(
-                "team mode currently supports only the resident-demo task pack"
-            )
+        task_pack_id = request.task_pack or self.team_pack.task_pack_id
+        if task_pack_id not in self.team_task_packs:
+            raise ValueError(f"unsupported Team task pack: {task_pack_id}")
         return self._submit_team_task(request)
+
+    def create_paired_eval(
+        self,
+        request: PairedEvalRequest,
+        *,
+        recovering: bool = False,
+    ) -> PairedEvalCreated:
+        task_request = TaskRequest(
+            title=request.title,
+            brief=request.brief,
+            model_mode=request.model_mode,
+            task_pack=request.task_pack,
+            model_budget=request.model_budget,
+        )
+
+        def prepare_arm(
+            mode: Literal["single", "team"],
+            identity: EvalRunIdentity,
+        ) -> EvalRunIdentity:
+            prepared_request = task_request.model_copy(
+                update={"execution_mode": mode}
+            )
+            if mode == "single":
+                self._prepare_single_task(
+                    prepared_request,
+                    identity,
+                    hold_for_paired_commit=True,
+                )
+            else:
+                self._prepare_team_task(prepared_request, identity)
+            return identity
+
+        def release_arm(
+            mode: Literal["single", "team"],
+            identity: EvalRunIdentity,
+        ) -> None:
+            self._release_prepared_task(mode, identity)
+
+        return self.eval_service.create(
+            request,
+            prepare_arm=prepare_arm,
+            release_arm=release_arm,
+            cancel_arm=lambda run_id: self.cancel_run(
+                run_id, reason="paired_eval_creation_failed"
+            ),
+            fail_precommit=not recovering,
+        )
+
+    def paired_eval(self, eval_id: str) -> PairedEvalReport:
+        return self.eval_service.report(eval_id)
+
+    def finalize_paired_eval(self, eval_id: str) -> PairedEvalReport:
+        return self.eval_service.finalize(eval_id)
+
+    def _requested_model_profile(
+        self,
+        request: TaskRequest,
+        task_pack_id: str,
+    ) -> dict[str, object]:
+        if request.model_mode == "scripted":
+            profile: dict[str, object] = {
+                "provider": "FakeModelProvider",
+                "model": f"{task_pack_id}-scripted-v1",
+                "deterministic": True,
+            }
+            team_pack = self.team_task_packs.get(task_pack_id)
+            manifest_hash = getattr(
+                team_pack,
+                "scripted_comparison_manifest_hash",
+                None,
+            )
+            if callable(manifest_hash):
+                profile.update(
+                    {
+                        "model": f"{task_pack_id}-script-suite-v1",
+                        "comparison_semantics": (
+                            "arm_specific_deterministic_scripts"
+                        ),
+                        "script_manifest_sha256": manifest_hash(),
+                    }
+                )
+            return profile
+        return DeepSeekOpenAIProvider(
+            max_tokens=request.model_budget.max_output_tokens_per_call,
+        ).attestation_profile()
 
     def cancel_run(self, run_id: str, *, reason: str = "operator_requested") -> dict:
         run = self.store.projection("run", run_id)
@@ -1619,12 +1742,46 @@ class ResidentRuntime:
         return True
 
     def _submit_team_task(self, request: TaskRequest) -> RunCreated:
+        identity = EvalRunIdentity(
+            run_id=f"run_{uuid4().hex[:12]}",
+            task_id=f"task_{uuid4().hex[:12]}",
+        )
+        created = self._prepare_team_task(request, identity)
+        self._release_prepared_task("team", identity)
+        return created
+
+    def _prepare_team_task(
+        self,
+        request: TaskRequest,
+        identity: EvalRunIdentity,
+    ) -> RunCreated:
         if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
             raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
-        run_id = f"run_{uuid4().hex[:12]}"
-        task_id = f"task_{uuid4().hex[:12]}"
+        task_pack_id = request.task_pack or self.team_pack.task_pack_id
+        task_pack = self.team_task_packs.get(task_pack_id)
+        if task_pack is None:
+            raise ValueError(f"unsupported Team task pack: {task_pack_id}")
+        run_id = identity.run_id
+        task_id = identity.task_id
+        task_metadata = task_pack.prepare_run(run_id)
+        fixture_hash = task_metadata.get("fixture_hash")
+        if fixture_hash is not None:
+            task_metadata["input_hash"] = paired_input_hash(
+                PairedEvalRequest(
+                    request_id="runtime-prepare",
+                    title=request.title,
+                    brief=request.brief,
+                    model_mode=request.model_mode,
+                    task_pack="repo-maintainer",
+                    model_budget=request.model_budget,
+                ),
+                str(fixture_hash),
+            )
+        team_contract = task_pack.team_contract()
+        model_profile = self._requested_model_profile(request, task_pack_id)
         created = self.store.append(
             Event(
+                id=str(uuid5(NAMESPACE_URL, f"crazy:run:{run_id}:created")),
                 run_id=run_id,
                 task_id=task_id,
                 type="run.created",
@@ -1634,16 +1791,19 @@ class ResidentRuntime:
                     "brief": request.brief,
                     "model_mode": request.model_mode,
                     "execution_mode": "team",
-                    "task_pack": self.team_pack.task_pack_id,
-                    "team_contract": self.team_contract.model_dump(mode="json"),
+                    "task_pack": task_pack_id,
+                    "team_contract": team_contract.model_dump(mode="json"),
                     "model_budget": request.model_budget.model_dump(mode="json"),
+                    "model_profile": model_profile,
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.7.0-dev",
+                    "behavior_version": "v0.8.0-dev",
+                    **task_metadata,
                 },
             )
         )
-        ingress = self.store.append(
+        self.store.append(
             Event(
+                id=str(uuid5(NAMESPACE_URL, f"crazy:run:{run_id}:ingress")),
                 run_id=run_id,
                 task_id=task_id,
                 type="event.external.received",
@@ -1656,21 +1816,55 @@ class ResidentRuntime:
                 causation_id=created.id,
             )
         )
-        self._deliver("coordinator", ingress, delivery_id=f"ingress:{run_id}")
         return RunCreated(run_id=run_id, task_id=task_id)
 
     def _submit_single_task(self, request: TaskRequest) -> RunCreated:
+        identity = EvalRunIdentity(
+            run_id=f"run_{uuid4().hex[:12]}",
+            task_id=f"task_{uuid4().hex[:12]}",
+        )
+        created = self._prepare_single_task(request, identity)
+        self._release_prepared_task("single", identity)
+        return created
+
+    def _prepare_single_task(
+        self,
+        request: TaskRequest,
+        identity: EvalRunIdentity,
+        *,
+        hold_for_paired_commit: bool = False,
+    ) -> RunCreated:
         task_pack_id = request.task_pack or self.repo_maintainer_pack.task_pack_id
         pack = self.task_packs.get(task_pack_id)
         if pack is None:
             raise ValueError(f"unsupported single-agent task pack: {task_pack_id}")
         if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
             raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
-        run_id = f"run_{uuid4().hex[:12]}"
-        task_id = f"task_{uuid4().hex[:12]}"
+        run_id = identity.run_id
+        task_id = identity.task_id
         prepared = pack.prepare(run_id)
+        model_profile = self._requested_model_profile(request, task_pack_id)
+        case_metadata = (
+            pack.case_metadata(prepared)
+            if isinstance(pack, RepoMaintainerTaskPack)
+            else {}
+        )
+        fixture_hash = case_metadata.get("fixture_hash")
+        if fixture_hash is not None:
+            case_metadata["input_hash"] = paired_input_hash(
+                PairedEvalRequest(
+                    request_id="runtime-prepare",
+                    title=request.title,
+                    brief=request.brief,
+                    model_mode=request.model_mode,
+                    task_pack="repo-maintainer",
+                    model_budget=request.model_budget,
+                ),
+                str(fixture_hash),
+            )
         created = self.store.append(
             Event(
+                id=str(uuid5(NAMESPACE_URL, f"crazy:run:{run_id}:created")),
                 run_id=run_id,
                 task_id=task_id,
                 type="run.created",
@@ -1682,14 +1876,24 @@ class ResidentRuntime:
                     "execution_mode": "single",
                     "task_pack": task_pack_id,
                     "model_budget": request.model_budget.model_dump(mode="json"),
+                    "model_profile": model_profile,
                     "workspace_path": str(prepared.workspace),
-                    "behavior_version": "v0.3.0-dev",
+                    "baseline_path": str(
+                        prepared.baseline
+                        if hasattr(prepared, "baseline")
+                        else prepared.workspace
+                    ),
+                    "behavior_version": "v0.8.0-dev",
+                    **case_metadata,
                 },
             )
         )
         contract = pack.assignment_contract()
-        assignment = self.store.append(
+        self.store.append(
             Event(
+                id=str(
+                    uuid5(NAMESPACE_URL, f"crazy:run:{run_id}:single-assignment")
+                ),
                 run_id=run_id,
                 task_id=task_id,
                 type="assignment.created",
@@ -1703,12 +1907,41 @@ class ResidentRuntime:
                     "contract": contract.model_dump(mode="json"),
                     "receiver": pack.agent_id,
                     "workspace_path": str(prepared.workspace),
+                    **(
+                        {"release_policy": "paired_eval_commit"}
+                        if hold_for_paired_commit
+                        else {}
+                    ),
                 },
                 causation_id=created.id,
             )
         )
-        self._deliver(pack.agent_id, assignment, delivery_id=f"single:{task_id}:turn:1")
         return RunCreated(run_id=run_id, task_id=task_id)
+
+    def _release_prepared_task(
+        self,
+        mode: Literal["single", "team"],
+        identity: EvalRunIdentity,
+    ) -> None:
+        events = self.store.read_all(run_id=identity.run_id)
+        if mode == "team":
+            trigger_type = "event.external.received"
+            receiver = "coordinator"
+            delivery_id = f"ingress:{identity.run_id}"
+        else:
+            trigger_type = "assignment.created"
+            created = next(event for event in events if event.type == "run.created")
+            task_pack_id = str(created.payload["task_pack"])
+            receiver = self.task_packs[task_pack_id].agent_id
+        triggers = [event for event in events if event.type == trigger_type]
+        if len(triggers) != 1:
+            raise RuntimeError(
+                f"prepared {mode} run has no unique release trigger: {identity.run_id}"
+            )
+        trigger = triggers[0]
+        if mode == "single":
+            delivery_id = f"route:{trigger.id}:{receiver}"
+        self._deliver(receiver, trigger, delivery_id=delivery_id)
 
     def run_until_idle(self, *, max_steps: int = 100) -> int:
         started_at = self.scheduler.completed_steps
@@ -1975,11 +2208,28 @@ class ResidentRuntime:
             )
         )
 
-    def _model_for(self, model_mode: str, task_pack: TaskPack) -> ModelProvider:
+    def _model_for(
+        self,
+        model_mode: str,
+        task_pack: TaskPack,
+        model_profile: dict[str, object] | None = None,
+    ) -> ModelProvider:
         if self._model_factory is not None:
             return self._model_factory(model_mode)
         if model_mode == "deepseek":
-            return DeepSeekOpenAIProvider()
+            profile = model_profile or {}
+            thinking_mode = str(profile.get("thinking_mode", "disabled"))
+            if thinking_mode not in {"enabled", "disabled"}:
+                raise ValueError("invalid persisted DeepSeek thinking_mode")
+            return DeepSeekOpenAIProvider(
+                base_url=str(
+                    profile.get("base_url", "https://api.deepseek.com")
+                ),
+                model=str(profile.get("model", "deepseek-v4-flash")),
+                timeout_seconds=float(profile.get("timeout_seconds", 60.0)),
+                thinking_mode=thinking_mode,
+                max_tokens=int(profile.get("max_output_tokens", 4096)),
+            )
         if model_mode == "scripted":
             return FakeModelProvider(task_pack.scripted_responses())
         raise ValueError(f"unsupported model mode: {model_mode}")
@@ -2116,7 +2366,22 @@ class ResidentRuntime:
         model_mode = str(created.payload.get("model_mode", "scripted"))
         model = self._single_models.get(trigger.task_id)
         if model is None:
-            model = self._model_for(model_mode, pack)
+            if model_mode == "scripted" and self._model_factory is None:
+                responses = pack.scripted_responses()
+                completed = sum(
+                    event.type == "model.completed" for event in events
+                )
+                if completed > len(responses):
+                    raise RuntimeError(
+                        "persisted Single model cursor exceeds scripted responses"
+                    )
+                model = FakeModelProvider(responses[completed:])
+            else:
+                model = self._model_for(
+                    model_mode,
+                    pack,
+                    dict(created.payload.get("model_profile") or {}),
+                )
             self._single_models[trigger.task_id] = model
         loop = pack.build_loop(
             run_id=trigger.run_id,
@@ -2160,11 +2425,24 @@ class ResidentRuntime:
 
     def _register_agents(self) -> None:
         for agent_id, role, capabilities in self.AGENTS:
-            if self.store.projection("agent", agent_id) is not None:
+            current = self.store.projection("agent", agent_id)
+            if current is not None and (
+                current.get("role") == role
+                and current.get("capabilities") == capabilities
+                and int(current.get("max_concurrency", 1)) == 1
+            ):
                 continue
             self.store.append(
                 Event(
-                    id=str(uuid5(NAMESPACE_URL, f"crazy:agent-card:{agent_id}")),
+                    id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            (
+                                f"crazy:agent-card:{agent_id}:{role}:"
+                                f"{','.join(capabilities)}:1"
+                            ),
+                        )
+                    ),
                     run_id="control-plane",
                     task_id="control-plane",
                     type="agent.registered",
@@ -2235,8 +2513,29 @@ class ResidentRuntime:
             raise RuntimeError(f"team run has no run.created event: {run_id}")
         persisted = created.payload.get("team_contract")
         return (
-            TeamContract.model_validate(persisted) if persisted else self.team_contract
+            TeamContract.model_validate(persisted)
+            if persisted
+            else self.team_task_pack_for(run_id).team_contract()
         )
+
+    def team_task_pack_for(self, run_id: str) -> ResidentDemoTeamTaskPack:
+        created = next(
+            (
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            ),
+            None,
+        )
+        if created is None:
+            raise RuntimeError(f"Team run has no run.created event: {run_id}")
+        task_pack_id = str(created.payload.get("task_pack", self.team_pack.task_pack_id))
+        try:
+            return self.team_task_packs[task_pack_id]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"unsupported persisted Team task pack: {task_pack_id}"
+            ) from exc
 
     def _supervisor_context(
         self,
@@ -2596,6 +2895,11 @@ class ResidentRuntime:
             return True
         receiver: str | None = None
         if event.type == "assignment.created":
+            if (
+                event.payload.get("release_policy") == "paired_eval_commit"
+                and not self._paired_assignment_is_committed(event)
+            ):
+                return False
             receiver = event.payload.get("agent_id")
         elif event.type in {
             "agent.result.submitted",
@@ -2616,6 +2920,20 @@ class ResidentRuntime:
             self._queue_dream(event)
             return True
         return False
+
+    def _paired_assignment_is_committed(self, assignment: Event) -> bool:
+        links = [
+            event
+            for event in self.store.read_all(run_id=assignment.run_id)
+            if event.type == "eval.arm.linked"
+        ]
+        if len(links) != 1:
+            return False
+        eval_id = str(links[0].payload.get("eval_id", ""))
+        return any(
+            event.type == "eval.pair.committed"
+            for event in self.store.read_all(run_id=eval_id)
+        )
 
     def _queue_dream(self, succeeded: Event) -> None:
         signal = self._append_deterministic(

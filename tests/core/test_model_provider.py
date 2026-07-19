@@ -111,6 +111,27 @@ def test_deepseek_provider_sends_openai_tool_contract_and_normalizes_response():
     assert response.system_fingerprint == "fp-test"
 
 
+def test_deepseek_provider_exposes_complete_inference_attestation_profile():
+    provider = DeepSeekOpenAIProvider(
+        api_key="test-key",
+        base_url="https://deepseek.invalid",
+        model="deepseek-v4-flash",
+        timeout_seconds=23.5,
+        thinking_mode="disabled",
+        max_tokens=2048,
+    )
+
+    assert provider.attestation_profile() == {
+        "provider": "DeepSeekOpenAIProvider",
+        "model": "deepseek-v4-flash",
+        "base_url": "https://deepseek.invalid",
+        "thinking_mode": "disabled",
+        "sampling_control": "provider_default_unseeded",
+        "max_output_tokens": 2048,
+        "timeout_seconds": 23.5,
+    }
+
+
 def test_model_audit_payload_excludes_raw_reasoning_content():
     response = ModelResponse(
         content='{"type":"continue","reason":"safe"}',

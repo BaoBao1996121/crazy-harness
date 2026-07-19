@@ -51,6 +51,7 @@ class TeamModelBinding:
 
 
 TeamModelFactory = Callable[[TeamModelBinding], ModelProvider]
+TeamTaskPackResolver = Callable[[str], ResidentDemoTeamTaskPack]
 
 
 class TeamWorkerEngine:
@@ -71,6 +72,7 @@ class TeamWorkerEngine:
         begin_leased_step: LeaseGuard,
         fail_run: RunFailure,
         model_factory: TeamModelFactory | None = None,
+        task_pack_resolver: TeamTaskPackResolver | None = None,
         model_call_authority: ModelCallAuthority | None = None,
         fault_injector: FaultInjector | None = None,
     ) -> None:
@@ -79,6 +81,7 @@ class TeamWorkerEngine:
         self.artifacts = artifacts
         self.kernel = kernel
         self.task_pack = task_pack
+        self.task_pack_resolver = task_pack_resolver or (lambda _run_id: task_pack)
         self.deliver = deliver
         self.route_decision = route_decision
         self.begin_leased_step = begin_leased_step
@@ -88,6 +91,9 @@ class TeamWorkerEngine:
         self.fault_injector = fault_injector
         self._models: dict[str, ModelProvider] = {}
         self._loops: dict[str, AgentLoop] = {}
+
+    def task_pack_for(self, run_id: str) -> ResidentDemoTeamTaskPack:
+        return self.task_pack_resolver(run_id)
 
     def handle(self, delivery: Delivery, *, agent_id: str) -> None:
         trigger = delivery.event
@@ -148,8 +154,9 @@ class TeamWorkerEngine:
         self._advance_assignment(assignment, loop)
 
     def _assignment_loop(self, assignment: Event) -> AgentLoop:
+        task_pack = self.task_pack_for(assignment.run_id)
         assignment_id = str(assignment.payload["assignment_id"])
-        agent_run_id = self.task_pack.assignment_agent_run_id(assignment_id)
+        agent_run_id = task_pack.assignment_agent_run_id(assignment_id)
         existing = self._loops.get(agent_run_id)
         if existing is not None:
             return existing
@@ -161,7 +168,7 @@ class TeamWorkerEngine:
         contract = AssignmentContract.model_validate(seed.payload["contract"])
         stage_id = str(assignment.payload["stage_id"])
         peer_receiver = self._evidence_agent(assignment.run_id)
-        responses = self.task_pack.scripted_assignment_responses(
+        responses = task_pack.scripted_assignment_responses(
             stage_id,
             peer_receiver=peer_receiver,
         )
@@ -179,7 +186,7 @@ class TeamWorkerEngine:
             responses,
         )
         run = self.store.projection("run", assignment.run_id) or {}
-        loop = self.task_pack.build_assignment_loop(
+        loop = task_pack.build_assignment_loop(
             run_id=assignment.run_id,
             root_task_id=assignment.task_id,
             task_id=agent_run_id,
@@ -208,8 +215,9 @@ class TeamWorkerEngine:
         return loop
 
     def _ensure_assignment_seed(self, assignment: Event) -> Event:
+        task_pack = self.task_pack_for(assignment.run_id)
         assignment_id = str(assignment.payload["assignment_id"])
-        agent_run_id = self.task_pack.assignment_agent_run_id(assignment_id)
+        agent_run_id = task_pack.assignment_agent_run_id(assignment_id)
         existing = next(
             (
                 event
@@ -225,7 +233,7 @@ class TeamWorkerEngine:
         contract = (
             AssignmentContract.model_validate(contract_payload)
             if contract_payload is not None
-            else self.task_pack.assignment_contract(stage_id)
+            else task_pack.assignment_contract(stage_id)
         )
         public_refs = [
             event.id
@@ -259,8 +267,9 @@ class TeamWorkerEngine:
         )
 
     def _advance_assignment(self, assignment: Event, loop: AgentLoop) -> None:
+        task_pack = self.task_pack_for(assignment.run_id)
         assignment_id = str(assignment.payload["assignment_id"])
-        agent_run_id = self.task_pack.assignment_agent_run_id(assignment_id)
+        agent_run_id = task_pack.assignment_agent_run_id(assignment_id)
         events = self.store.read_all(task_id=agent_run_id)
         terminal = next(
             (
@@ -320,8 +329,9 @@ class TeamWorkerEngine:
         submission: Event,
         child_events: list[Event],
     ) -> None:
+        task_pack = self.task_pack_for(assignment.run_id)
         assignment_id = str(assignment.payload["assignment_id"])
-        agent_run_id = self.task_pack.assignment_agent_run_id(assignment_id)
+        agent_run_id = task_pack.assignment_agent_run_id(assignment_id)
         artifact = dict(submission.payload.get("artifact") or {})
         evidence_refs = self._dedupe(
             event.id
@@ -467,8 +477,9 @@ class TeamWorkerEngine:
         )
 
     def _peer_loop(self, request: Event, *, agent_id: str) -> AgentLoop:
+        task_pack = self.task_pack_for(request.run_id)
         correlation_id = str(request.payload["correlation_id"])
-        agent_run_id = self.task_pack.peer_agent_run_id(correlation_id)
+        agent_run_id = task_pack.peer_agent_run_id(correlation_id)
         existing = self._loops.get(agent_run_id)
         if existing is not None:
             return existing
@@ -487,9 +498,9 @@ class TeamWorkerEngine:
                 agent_run_kind="peer",
                 model_mode=model_mode,
             ),
-            self.task_pack.scripted_peer_responses(),
+            task_pack.scripted_peer_responses(),
         )
-        loop = self.task_pack.build_peer_loop(
+        loop = task_pack.build_peer_loop(
             run_id=request.run_id,
             root_task_id=request.task_id,
             task_id=agent_run_id,
@@ -509,8 +520,9 @@ class TeamWorkerEngine:
         return loop
 
     def _ensure_peer_seed(self, request: Event, *, agent_id: str) -> Event:
+        task_pack = self.task_pack_for(request.run_id)
         correlation_id = str(request.payload["correlation_id"])
-        agent_run_id = self.task_pack.peer_agent_run_id(correlation_id)
+        agent_run_id = task_pack.peer_agent_run_id(correlation_id)
         existing = next(
             (
                 event
@@ -564,7 +576,7 @@ class TeamWorkerEngine:
             )
             if team_contract.peer_contract is not None:
                 return team_contract.peer_contract
-        return self.task_pack.peer_contract()
+        return self.task_pack_for(run_id).peer_contract()
 
     def _advance_peer(
         self,
@@ -574,7 +586,8 @@ class TeamWorkerEngine:
         correlation_id: str,
         loop: AgentLoop,
     ) -> None:
-        agent_run_id = self.task_pack.peer_agent_run_id(correlation_id)
+        task_pack = self.task_pack_for(request.run_id)
+        agent_run_id = task_pack.peer_agent_run_id(correlation_id)
         events = self.store.read_all(task_id=agent_run_id)
         terminal = next(
             (
@@ -640,8 +653,9 @@ class TeamWorkerEngine:
         *,
         agent_id: str,
     ) -> None:
+        task_pack = self.task_pack_for(request.run_id)
         correlation_id = str(request.payload["correlation_id"])
-        agent_run_id = self.task_pack.peer_agent_run_id(correlation_id)
+        agent_run_id = task_pack.peer_agent_run_id(correlation_id)
         artifact = dict(submission.payload.get("artifact") or {})
         refs: list[str] = [
             event.id for event in child_events if event.type == "tool.completed"
@@ -703,8 +717,9 @@ class TeamWorkerEngine:
             )
 
     def _mirror_peer_response(self, response: Event, assignment: Event) -> Event:
+        task_pack = self.task_pack_for(response.run_id)
         assignment_id = str(assignment.payload["assignment_id"])
-        agent_run_id = self.task_pack.assignment_agent_run_id(assignment_id)
+        agent_run_id = task_pack.assignment_agent_run_id(assignment_id)
         return self.store.append(
             Event(
                 id=self._event_id(
@@ -758,12 +773,37 @@ class TeamWorkerEngine:
         model = (
             self.model_factory(binding)
             if self.model_factory is not None
-            else DeepSeekOpenAIProvider(
-                user_id=f"{binding.run_id}:{binding.agent_id}"
-            )
+            else self._deepseek_provider(binding)
         )
         self._models[binding.agent_run_id] = model
         return model
+
+    def _deepseek_provider(self, binding: TeamModelBinding) -> ModelProvider:
+        profile = self._model_profile_for_run(binding.run_id)
+        thinking_mode = str(profile.get("thinking_mode", "disabled"))
+        if thinking_mode not in {"enabled", "disabled"}:
+            raise ValueError("invalid persisted DeepSeek thinking_mode")
+        return DeepSeekOpenAIProvider(
+            user_id=f"{binding.run_id}:{binding.agent_id}",
+            base_url=str(
+                profile.get("base_url", "https://api.deepseek.com")
+            ),
+            model=str(profile.get("model", "deepseek-v4-flash")),
+            timeout_seconds=float(profile.get("timeout_seconds", 60.0)),
+            thinking_mode=thinking_mode,
+            max_tokens=int(profile.get("max_output_tokens", 4096)),
+        )
+
+    def _model_profile_for_run(self, run_id: str) -> dict[str, object]:
+        created = next(
+            (
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            ),
+            None,
+        )
+        return dict(created.payload.get("model_profile") or {}) if created else {}
 
     def _model_mode_for_run(self, run_id: str) -> str:
         run = self.store.projection("run", run_id) or {}

@@ -12,8 +12,13 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from crazy_harness.control_plane.runtime import ResidentRuntime, TaskRequest
-from crazy_harness.control_plane.runtime import RunCreated
+from crazy_harness.control_plane.paired_evals import (
+    PairedEvalCreationRejected,
+    PairedEvalCreated,
+    PairedEvalReport,
+    PairedEvalRequest,
+)
+from crazy_harness.control_plane.runtime import ResidentRuntime, RunCreated, TaskRequest
 from crazy_harness.control_plane.kernel import KernelDecision
 from crazy_harness.control_plane.views import (
     CancelResult,
@@ -25,7 +30,7 @@ from crazy_harness.control_plane.views import (
     SnapshotView,
 )
 
-CONTROL_PLANE_VERSION = "0.7.0-dev"
+CONTROL_PLANE_VERSION = "0.8.0-dev"
 
 
 class FaultRequest(BaseModel):
@@ -81,6 +86,42 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
             return runtime.submit_task(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/evals/pairs",
+        status_code=status.HTTP_201_CREATED,
+        response_model=PairedEvalCreated,
+    )
+    def create_eval_pair(request: PairedEvalRequest) -> PairedEvalCreated:
+        try:
+            return runtime.create_paired_eval(request)
+        except PairedEvalCreationRejected as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/evals/pairs", response_model=list[PairedEvalReport])
+    def list_eval_pairs() -> list[PairedEvalReport]:
+        return runtime.eval_service.list_reports()
+
+    @app.get("/api/evals/pairs/{eval_id}", response_model=PairedEvalReport)
+    def get_eval_pair(eval_id: str) -> PairedEvalReport:
+        try:
+            return runtime.paired_eval(eval_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="eval pair not found") from exc
+
+    @app.post("/api/evals/pairs/{eval_id}/drain", response_model=PairedEvalReport)
+    def drain_eval_pair(eval_id: str) -> PairedEvalReport:
+        try:
+            runtime.eval_service.contract(eval_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="eval pair not found") from exc
+        runtime.run_until_idle(max_steps=300)
+        return runtime.finalize_paired_eval(eval_id)
 
     @app.post("/api/runs/{run_id}/drain", response_model=DrainResult)
     def drain_run(run_id: str) -> DrainResult:

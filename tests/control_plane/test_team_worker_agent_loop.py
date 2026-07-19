@@ -32,7 +32,7 @@ def test_every_team_assignment_runs_through_the_canonical_agent_loop(tmp_path):
     created, events = _team_run(runtime)
 
     assert runtime.snapshot(created.run_id)["run"]["status"] == "succeeded"
-    assert runtime.snapshot(created.run_id)["run"]["behavior_version"] == "v0.7.0-dev"
+    assert runtime.snapshot(created.run_id)["run"]["behavior_version"] == "v0.8.0-dev"
     assignments = [event for event in events if event.type == "assignment.created"]
     assert len(assignments) == 4
     for assignment in assignments:

@@ -224,3 +224,23 @@ def test_default_scripted_runtime_activates_project_skill(tmp_path):
     assert activation.payload["result"]["status"] == "ok"
     assert manifests[0]["kinds"]["skill.activate"] == "skill"
     assert manifests[0]["providers"]["skill.activate"] == "local:skills"
+
+
+def test_default_scripted_runtime_resumes_after_process_restart_without_replay(tmp_path):
+    first_runtime = ResidentRuntime(tmp_path)
+    created = first_runtime.submit_task(_repo_maintainer_request())
+    assert first_runtime.scheduler.run_once() is True
+    completed_before_restart = sum(
+        event.type == "model.completed"
+        for event in first_runtime.store.read_all(run_id=created.run_id)
+    )
+    assert completed_before_restart == 1
+
+    recovered_runtime = ResidentRuntime(tmp_path)
+    recovered_runtime.run_until_idle(max_steps=50)
+    events = recovered_runtime.store.read_all(run_id=created.run_id)
+
+    assert recovered_runtime.snapshot(created.run_id)["run"]["status"] == "succeeded"
+    assert sum(event.type == "model.completed" for event in events) == len(
+        recovered_runtime.repo_maintainer_pack.scripted_responses()
+    )

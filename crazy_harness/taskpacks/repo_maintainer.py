@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
+from tempfile import mkdtemp
 
 from crazy_harness.core.agents import AgentLoop, AssignmentContract, CompletionGate, NudgeBudget
 from crazy_harness.core.agents.contracts import AssignmentBudget
@@ -81,6 +84,8 @@ class PreparedRepoWorkspace:
 
 class RepoMaintainerTaskPack:
     task_pack_id = "repo-maintainer"
+    case_id = "clamp-bounds-v1"
+    scorer_version = "repo-maintainer-v2"
     agent_id = "generalist"
     writable_paths = frozenset({"calculator.py"})
 
@@ -117,6 +122,62 @@ class RepoMaintainerTaskPack:
         self._materialize_once(prepared.workspace)
         self._materialize_once(prepared.baseline)
         return prepared
+
+    def case_metadata(self, prepared: PreparedRepoWorkspace) -> dict[str, str]:
+        expected = self.fixture_hash()
+        if self.workspace_hash(prepared.workspace) != expected:
+            raise RuntimeError(
+                "repo-maintainer workspace does not match trusted fixture"
+            )
+        if self.workspace_hash(prepared.baseline) != expected:
+            raise RuntimeError("repo-maintainer baseline does not match trusted fixture")
+        return {
+            "case_id": self.case_id,
+            "fixture_hash": expected,
+            "scorer_version": self.scorer_version,
+        }
+
+    @staticmethod
+    def fixture_files() -> dict[str, bytes]:
+        return {
+            relative: content.encode("utf-8")
+            for relative, content in _TEMPLATE_FILES.items()
+        }
+
+    @classmethod
+    def fixture_hash(cls) -> str:
+        digest = sha256()
+        for relative, content in sorted(cls.fixture_files().items()):
+            encoded_relative = relative.encode("utf-8")
+            digest.update(len(encoded_relative).to_bytes(4, "big"))
+            digest.update(encoded_relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return digest.hexdigest()
+
+    @staticmethod
+    def workspace_hash(root: Path) -> str:
+        digest = sha256()
+        files = sorted(
+            (
+                path.relative_to(root).as_posix(),
+                path,
+            )
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+        for relative_text, path in files:
+            relative = relative_text.encode("utf-8")
+            content = path.read_bytes()
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return digest.hexdigest()
+
+    @staticmethod
+    def fixed_source() -> str:
+        return _FIXED_SOURCE
 
     def build_skills(self) -> SkillCatalog:
         discovered = FileSystemSkillLoader().discover(self.skill_sources, agent_id=self.agent_id)
@@ -315,11 +376,27 @@ class RepoMaintainerTaskPack:
         ]
         return [json.dumps(action) for action in actions]
 
-    @staticmethod
-    def _materialize_once(root: Path) -> None:
+    def _materialize_once(self, root: Path) -> None:
         if root.exists():
             return
+        root.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(mkdtemp(prefix=f".{root.name}.", dir=root.parent))
+        try:
+            self._write_fixture(staging)
+            try:
+                staging.replace(root)
+            except OSError:
+                # A concurrent preparer may have atomically published the same root.
+                if not root.exists():
+                    raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _write_fixture(root: Path) -> None:
         for relative, content in _TEMPLATE_FILES.items():
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            # Canonical LF bytes keep input_hash identical across Windows and Linux.
+            target.write_bytes(content.encode("utf-8"))
