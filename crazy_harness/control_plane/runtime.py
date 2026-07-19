@@ -782,11 +782,20 @@ class ResidentScheduler:
                             dispatch_context.cancellation.cancel(
                                 "work claim renewal could not be confirmed"
                             )
+                            # 终止事实必须先于 Reservation 释放可见；否则
+                            # in_flight == 0 不能作为恢复与审计的完成边界。
+                            self._record_renewal_failure(
+                                worker_id=worker_id,
+                                delivery=delivery,
+                                error=exc,
+                                will_retry=False,
+                            )
+                            continue
                     self._record_renewal_failure(
                         worker_id=worker_id,
                         delivery=delivery,
                         error=exc,
-                        will_retry=not cancel_before_expiry,
+                        will_retry=True,
                     )
                     continue
                 if renewed:
