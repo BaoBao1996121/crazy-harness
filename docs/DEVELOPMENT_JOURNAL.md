@@ -183,3 +183,59 @@
 - **证据**：原续租用例本机第 2 次即复现 `will_retry=True`，修复后连续 `25/25` 通过；失败 Team Trace 没有 Scheduler/Worker 错误且持续推进，Reviewer 在 31.71 秒提交，证明是阈值误判而非漏唤醒；最终受控并发与 Scheduler 邻接组 `34 passed in 73.19s`，Ruff 与 diff check 全绿。
 - **效果**：`in_flight_count == 0` 现在确实晚于终止续租审计事实，恢复者不会读到半完成状态；并行语义测试仍能发现 60 秒级死锁，但不再把 Windows 调度抖动当成业务回归。
 - **边界**：60 秒只是测试保险上限，不是 Runtime 延迟 SLA，也没有掩盖性能退化；PR 必须重新跑完 Ubuntu、Windows 与 Frontend 后才可合并。
+
+### 10:44 Campaign 领域契约与 Pair Finalizer 活性基线
+
+- **时间**：2026-07-19 10:44:43 +08:00。
+- **动作**：冻结 Campaign 总预算、预注册 Trial、跨 Pair Harness Scope、确定性同步重采样与 Scripted 只否决不晋升语义；同时用 RED 复现已完成 Pair 被 `finalize_ready()` 每轮重复计为新进展的问题。
+- **证据**：三个 Campaign Spike 全部通过；领域与 Pair 邻接组 `22 passed`；Finalizer 回归修复前第二次返回 `1`，修复后定向测试 `1 passed in 37.05s` 且第二次返回 `0`。
+- **效果**：多 Trial 统计已有可重放的领域底座；常驻 Runtime 不再因历史 Pair 终态持续 `continue` 而饿死 Mailbox、Lease 和后续 Campaign 阶段。
+- **边界**：当前尚未创建持久 Campaign 或前端视图；Bootstrap 阈值是初始工程值，本机无 DeepSeek Key，不能声明 Live 收益。
+
+### 11:23 v0.8 稳定基线与 Campaign 施工面阶段验收
+
+- **时间**：2026-07-19 11:23:00 +08:00。
+- **动作**：在 Campaign 施工分支重跑核心统计、持久 Campaign 创建、Pair 暂停/释放与恢复邻接测试；随后用既有加固数据目录重启 `v0.8.0-dev`，通过正式 HTTP API 恢复 Golden Pair，并用真实 Chromium 打开 Control Room 对照页。
+- **证据**：专项回归 `14 passed in 164.42s`；`GET /api/health` 返回 `status=ok`、Runtime `running`、Scheduler 容量 2；Eval `eval_5d3fd7637cf2` 的 Single `run_4d4c93dba07c` 与 Team `run_9e56c52a8e02` 均通过独立 Scorer。Team Trace 含 19 次模型完成、9 次工具完成和 1 次 A2A 请求；1440x1000 浏览器页面宽度等于视口、控制台 0 error，截图为 `output/playwright/current_stage_v08_20260719.png`。
+- **效果**：确认公开主线 v0.8 仍是可启动、可恢复、可评分和可观察的稳定基线；当前分支已经拥有 Campaign 领域计算、持久父契约创建及子 Pair 受控释放的可执行底座，没有因探索破坏原 Pair 链路。
+- **边界**：Campaign 尚未接入常驻调度、HTTP API 和 Control Room，因此不能算用户可操作能力；当前 Golden Pair 使用 Scripted Provider，本机仍无 `DEEPSEEK_API_KEY`，不能声明真实模型下 Team 更优。
+
+### 13:04 Campaign Control Room 与三轮并发实机检查点
+
+- **时间**：2026-07-19 13:04:01 +08:00。
+- **动作**：把 Campaign 接入常驻 Runtime、HTTP API 和 Control Room；补齐持久取消、子 Pair 创建失败治理、父级预算与最多两组 Pair 并发释放，并从正式 API 启动 3-Trial Scripted Campaign。
+- **证据**：Campaign `campaign_dead707d1de1` 已真实创建 3 个 Pair，Trial 01 与 03 均被独立 Scorer 判为 Single/Team `100/100`；前端专项与全量验证为 `19 files / 58 tests passed`，Production Build 成功；Campaign 后端领域、Service、API 与 Runtime 邻接组为 `23 passed in 163.50s`。当前页面截图为 `output/playwright/stage_report_campaign_current_20260719.png`。
+- **效果**：用户已经能在一个父级实验视图中观察 Trial 进度、并发窗口、Single/Team 质量与耗时，并下钻到 Pair 和完整因果时间线；Campaign 不再是前端临时求和，而是可取消、可恢复、有总预算的持久实验实体。
+- **边界**：本次实机检查严格记为 `2/3`，不能算 Golden 通过。Trial 02 的 Team 在 `agent_concurrency_exceeded:scout` 被安全拒绝后没有留下新的持久重规划工作，暴露“安全性正确、活性不足”的 Supervisor 缺口；实验标题还因 PowerShell 请求编码显示为 `??`。本机仍无 `DEEPSEEK_API_KEY`，当前只证明确定性机制，不证明真实模型下 Team 收益。
+
+### 14:08 Campaign 并发活性加固与三轮 Golden 完成
+
+- **时间**：2026-07-19 14:08:45 +08:00。
+- **动作**：把并发容量拒绝转成可重放的持久 Nudge；Supervisor 改用全局 Lease 负载做容量选择，同时保留当前 Run 的阶段视图；当所有匹配 Agent 只是暂时满载时，Run 记录 `orchestration.capacity.waiting` 而不失败，Lease 释放后再由确定性 `capacity_available` Nudge 唤醒并重规划。
+- **证据**：旧的 `2/3` Campaign 在重启后恢复到 `3/3`；最终 Changed Stage 覆盖 Campaign Domain/Service/Runtime/API 与 Durable Supervisor，结果为 `39 passed in 175.63s`。全新 Campaign `campaign_794a73e677b3` 三个 Trial 均为有效证据，Single/Team 全部成功且机器质量均为 `100/100`；整个 Campaign 有 `0` 次容量拒绝、`1` 次容量等待、`1` 次容量恢复、`0` 次 Run Pause。前端全量为 `19 files / 59 tests passed`，Production Build、Ruff 与 diff check 全部通过。
+- **效果**：短暂容量竞争不再被误判为永久不可执行，也不会在“拒绝 -> Nudge -> 再拒绝”中空转；等待与恢复现在作为中英双语持久事实出现在 Control Room。桌面与移动截图分别为 `output/playwright/campaign_golden_completed_desktop_20260719.png`、`output/playwright/campaign_golden_completed_mobile_20260719.png`。
+- **结论**：三轮确定性样本下成功率与质量差为 `0`，成本比为 `1.00x`，Team 耗时比为 `1.91x`，因此建议保持 Single。这个结论只说明当前 Scripted Repo Case 中协作开销没有换来质量收益，不外推到真实模型或开放任务。
+- **边界**：样本数只有 `3`，统计器只给点估计；本机没有 `DEEPSEEK_API_KEY`。进程若在唯一 Builder 的 Assignment 中途退出，Lease 过期后 Agent 可能进入 degraded，仍需独立的 Worker Health Recovery 纵切；容量等待者当前按历史 Event 扫描，属于正确但 `O(history)` 的学习版实现。
+
+设计审查：5/5 通过。没有新增外部 Runtime 依赖；测试、样本与耗时均标为本机实测；容量拒绝、暂时饱和、释放唤醒和中途崩溃边界均有记录；样本阈值和容量值仍标为初始值；范围限定为 Scripted Campaign 活性，不宣称真实模型 Team 收益。
+
+### 19:24 Campaign 发布终审关闭恢复与前端确认窗口
+
+- **时间**：2026-07-26 19:24:00 +08:00。
+- **动作**：只读终审实际复现四个恢复缺口后，scoped drain 改为先消费持久失败/取消事实再调度；父取消可从确定性 Arm 身份回收 Pair Contract 前的孤立 Run；暂时 Prepare 失败保留原 Pair 身份并有界重试；Pair Create Claim 在同步 Prepare 期间持续续租。Scorer 版本漂移改为无效但终态的报告，容量等待改传结构化 Stage ID。
+- **证据**：四条故障测试先得到 `4 failed`，修复后 `4 passed in 99.07s`；Scorer 漂移与分隔符 Stage ID 三条测试先 RED 后 `3 passed in 1.91s`。Campaign/Pair/Supervisor 邻接回归最终 `64 passed in 426.13s`。前端新增分享 URL 优先、后台创建确认、跨刷新取消意图、网络/5xx 有界取消重试、对话框焦点规则和结构化 API 错误防漂移；最终 `21 files / 82 tests passed`，Production Build 1,605 modules 成功，Ruff 与 diff check 全绿。
+- **效果**：Campaign 的“取消、恢复、定向推进”不再只在正常 Golden 路径成立；长 Prepare 不会因固定 TTL 被第二 Runtime 正常接管，升级 Scorer 也不会让父实验永久 Running。分享链接不再被本机旧请求抢占，已付费的取消意图不会因刷新静默丢失。
+- **截图**：已将 Golden Campaign 桌面与移动实机证据纳入 `docs/assets/campaign-golden-desktop.png` 和 `docs/assets/campaign-golden-mobile.png`。这两张图来自 2026-07-19 的 Golden 构建；2026-07-26 的对比度和 980px 布局微调因本轮没有可连接浏览器实例尚未重新截图，不冒充最新版视觉证据。
+- **边界**：Claim 续租维护的是 Harness 内提交权，不能撤回已经发生的外部副作用；外部 Prepare 仍必须幂等或可补偿。DeepSeek 与 Docker 外部门槛不变，当前 Scripted Campaign 不证明 Team 收益。
+
+设计审查：5/5 通过。SQLite Claim/renew API 已由本地 Spike 实测；所有测试数字均标为实测，最新版截图缺口已明确；临时超时、Claim 到期、半创建取消、失败事实、版本漂移、URL 抢占和网络不确定路径均有覆盖；TTL/重试次数仍是初始值；范围没有扩展到 Remote A2A、外部 exactly-once 或真实模型收益。
+
+### 20:15 Campaign 发布候选全量回归与跨重启 HTTP 实跑
+
+- **时间**：2026-07-26 20:15:00 +08:00。
+- **动作**：诊断课程就绪检查的全量参考套件失败，确认是旧 600 秒门限误报；在不截断测试的条件下实跑全套，并用独立数据目录启动最新 `v0.8.0-dev`，通过正式 HTTP API 创建、定向推进并跨进程重启恢复一个 1-Trial Scripted Campaign。
+- **证据**：全套 Python 回归 `360 passed, 3 skipped in 1105.26s`，墙钟 `1110.95s`；发布级门限据此调整为 1800 秒。最终课程门禁用时 `1184.63s`，状态为 `ready_with_external_gates`，17/17 required checks 全部通过。Campaign `campaign_e7a9a7170143` 在 `24.12s` 内完成，1/1 Trial 证据有效，Single/Team 均成功且机器质量均为 `100/100`，Team 耗时比为 `2.845596x`，建议 `keep_single`。服务重启后从同一 SQLite 恢复相同终态与样本哈希 `59598a352a8fb470d811493fbda332da3231912251f43ecd0b19afe4c9502dc6`。
+- **效果**：Campaign 发布候选不仅在进程内测试成立，也走通了真实 HTTP 边界与跨进程持久恢复；全量门禁不再把正常的慢速故障测试误判为失败。
+- **边界**：18 分钟全套回归不适合频繁探索。当前 CI 已区分非 Nightly 与 Nightly 标记，后续还需把等待型测试改为可控时钟并继续收窄 Changed/Smoke 反馈；本次仍为 Scripted Provider，未产生真实 DeepSeek 质量或费用证据。
+
+设计审查：5/5 通过。没有新增外部依赖；耗时、样本和哈希均来自本机实测；HTTP 创建、定向推进、终态读取与跨重启恢复均已覆盖；1800 秒是基于 1105.26 秒实测的发布级初始值；范围没有扩展到 Live LLM 或性能承诺。

@@ -28,6 +28,7 @@ Crazy 是一个不依赖现有 Agent 框架接管主循环、手工实现的事�
 - v0.6 受控并发：有界 Worker Pool、Agent 间 Round-Robin、持久背压、SQLite Delivery + AgentRun + Worker Slot 原子 Claim、TTL 自动续期与单调 fencing token
 - v0.7 在线 Team 模型治理：Assignment/Peer child AgentRun 可独立路由 DeepSeek；SQLite 在 HTTP 前原子预约共享 Token、费用和并发额度，持久记录 Attempt、Unknown、usage 核销与估算成本
 - v0.8 公平配对评测：同一 Repo Bug、同完整任务 Input Hash、同每臂总预算，分别运行 Single 与 Team；Live Pair 要求同模型及逐调用证明，Scripted Pair 明示两臂使用不同确定性脚本并固化脚本清单 Hash。Prepare -> Commit -> Release、Eval Create fencing 与浏览器待确认请求恢复共同防止重复 Pair，隔离工作区由独立机器 Scorer 复验
+- v0.8e 持久 Eval Campaign：预注册多个 Pair Trial，限制父级总预算与并发窗口，保存失败样本并做确定性配对聚合；支持取消、崩溃恢复、容量等待/Nudge、Scorer 版本失败关闭和 Control Room Trial 下钻
 - DispatchContext 将执行权与 CancellationToken 带入 Handler；旧 Worker 不能写可信运行事实、提交正式 Kernel 事实或 Ack，排队/在途 Run 均支持幂等协作式取消
 - Coordinator / Scout / Scout Backup / Builder / Reviewer 按能力动态委派，并支持受控一跳 A2A 对账
 - Team Worker 不再是直接伪造结果的事件处理器：Scripted Model 可提供可重放动作，DeepSeek 可提供在线动作；两种模式都为每个 Assignment/Peer 创建独立 child AgentRun，并由与单 Agent 共用的 canonical AgentLoop 逐轮推进。正式结果必须匹配持久 Contract、可回溯到 Seed/可信 Observation 的 Model/Command/Gate/Submission 链，以及以 `operation.completed` 收尾的合同 Tool Evidence
@@ -98,6 +99,8 @@ python -m crazy_harness.control_plane --port 8768 --data-dir runs\control_plane_
 打开脚本输出的 Run，选择“模型 / Model Governance”，即可查看运行预算、调用状态、重试次数、Token 与估算成本。该演示只用确定性 Provider 替代付费 HTTP，Team、A2A、工具、Gate、持久模型账本和前端均走正式实现。
 
 不花 API 费用的 v0.8 Single-vs-Team 公平评测：启动 Control Plane 后点击右上角“公平评测 / Eval”，保留 Scripted 模型并提交。平台先原子准备两个隔离 Run，持久化共同契约后才释放任务；后台执行同一 `repo-maintainer` Bug，并展示机器评分、两臂 Trace 与完整时间线。页面会明确显示“不同确定性脚本”，结果始终标记为“真实证据不足”，只证明机制，不宣称 Team 更优。
+
+多轮 Campaign：点击顶部“多轮评测 / Campaign”，选择 Trial 数量与 Pair 并发窗口。父实验会持久保存每个 Trial 的确定性身份、预算、Pair 报告 Hash、质量/成功/成本/耗时指标和推荐理由；点击任一 Trial 可继续下钻 Pair 与两条 Run Timeline。Scripted Campaign 只能否决明显退化，不能据此晋升 Team。
 
 Tool Search 大目录演示（持久 Mailbox -> Scheduler -> AgentLoop -> 搜索 -> 下一轮 Schema 披露 -> 原生工具调用）：
 

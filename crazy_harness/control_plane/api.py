@@ -5,12 +5,21 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from crazy_harness.control_plane.eval_campaigns import (
+    EvalCampaignCreated,
+    EvalCampaignIdempotencyConflict,
+    EvalCampaignReport,
+    EvalCampaignRequest,
+)
+from crazy_harness.control_plane.model_governance import ModelBudgetConfig
 
 from crazy_harness.control_plane.paired_evals import (
     PairedEvalCreationRejected,
@@ -48,6 +57,40 @@ class PeerProbeRequest(BaseModel):
     depth: int
 
 
+class PairedEvalCreateRequest(BaseModel):
+    """公开 Pair DTO；父子 Link 与释放策略只由 Harness 内部持有。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    title: str = Field(min_length=1, max_length=120)
+    brief: str = Field(min_length=1, max_length=4000)
+    model_mode: Literal["scripted", "deepseek"] = "scripted"
+    task_pack: Literal["repo-maintainer"] = "repo-maintainer"
+    model_budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
+
+    def internal(self) -> PairedEvalRequest:
+        return PairedEvalRequest.model_validate(self.model_dump(mode="python"))
+
+
+class ApiErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    code: str
+    message: str
+    retryable: bool = False
+
+
+class ApiErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    detail: ApiErrorDetail
+
+
 def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
     runtime = ResidentRuntime(Path(data_dir))
 
@@ -74,13 +117,17 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
 
     @app.get("/api/health", response_model=HealthView)
     def health() -> HealthView:
-        return HealthView.model_validate({
-            "status": "ok",
-            "runtime": runtime.snapshot()["runtime"],
-            "version": f"v{CONTROL_PLANE_VERSION}",
-        })
+        return HealthView.model_validate(
+            {
+                "status": "ok",
+                "runtime": runtime.snapshot()["runtime"],
+                "version": f"v{CONTROL_PLANE_VERSION}",
+            }
+        )
 
-    @app.post("/api/runs", status_code=status.HTTP_201_CREATED, response_model=RunCreated)
+    @app.post(
+        "/api/runs", status_code=status.HTTP_201_CREATED, response_model=RunCreated
+    )
     def create_run(request: TaskRequest) -> RunCreated:
         try:
             return runtime.submit_task(request)
@@ -92,9 +139,9 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
         response_model=PairedEvalCreated,
     )
-    def create_eval_pair(request: PairedEvalRequest) -> PairedEvalCreated:
+    def create_eval_pair(request: PairedEvalCreateRequest) -> PairedEvalCreated:
         try:
-            return runtime.create_paired_eval(request)
+            return runtime.create_paired_eval(request.internal())
         except PairedEvalCreationRejected as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -122,6 +169,122 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
             raise HTTPException(status_code=404, detail="eval pair not found") from exc
         runtime.run_until_idle(max_steps=300)
         return runtime.finalize_paired_eval(eval_id)
+
+    @app.post(
+        "/api/evals/campaigns",
+        status_code=status.HTTP_201_CREATED,
+        response_model=EvalCampaignCreated,
+        responses={
+            400: {"model": ApiErrorResponse, "description": "Invalid campaign"},
+            409: {"model": ApiErrorResponse, "description": "Campaign conflict"},
+        },
+    )
+    def create_eval_campaign(request: EvalCampaignRequest) -> EvalCampaignCreated:
+        try:
+            return runtime.create_eval_campaign(request)
+        except EvalCampaignIdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": exc.code,
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "eval_campaign_creation_in_progress",
+                    "message": str(exc),
+                    "retryable": True,
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "eval_campaign_invalid_request",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            ) from exc
+
+    @app.get("/api/evals/campaigns", response_model=list[EvalCampaignReport])
+    def list_eval_campaigns() -> list[EvalCampaignReport]:
+        return runtime.campaign_service.list_reports()
+
+    @app.get(
+        "/api/evals/campaigns/{campaign_id}",
+        response_model=EvalCampaignReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Campaign not found"},
+        },
+    )
+    def get_eval_campaign(campaign_id: str) -> EvalCampaignReport:
+        try:
+            return runtime.eval_campaign(campaign_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "eval_campaign_not_found",
+                    "message": "campaign not found",
+                    "retryable": False,
+                },
+            ) from exc
+
+    @app.post(
+        "/api/evals/campaigns/{campaign_id}/drain",
+        response_model=EvalCampaignReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Campaign not found"},
+        },
+    )
+    def drain_eval_campaign(campaign_id: str) -> EvalCampaignReport:
+        try:
+            runtime.campaign_service.contract(campaign_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "eval_campaign_not_found",
+                    "message": "campaign not found",
+                    "retryable": False,
+                },
+            ) from exc
+        runtime.run_eval_campaign_until_idle(campaign_id, max_steps=1500)
+        return runtime.finalize_eval_campaign(campaign_id)
+
+    @app.post(
+        "/api/evals/campaigns/{campaign_id}/cancel",
+        response_model=EvalCampaignReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Campaign not found"},
+            409: {"model": ApiErrorResponse, "description": "Cancellation conflict"},
+        },
+    )
+    def cancel_eval_campaign(campaign_id: str) -> EvalCampaignReport:
+        try:
+            return runtime.cancel_eval_campaign(campaign_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "eval_campaign_not_found",
+                    "message": "campaign not found",
+                    "retryable": False,
+                },
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "eval_campaign_cancellation_in_progress",
+                    "message": str(exc),
+                    "retryable": True,
+                },
+            ) from exc
 
     @app.post("/api/runs/{run_id}/drain", response_model=DrainResult)
     def drain_run(run_id: str) -> DrainResult:
@@ -151,10 +314,12 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
     ) -> EventPage:
         records = runtime.store.read_records(after=after, run_id=run_id, limit=limit)
         next_cursor = records[-1].cursor if records else after
-        return EventPage.model_validate({
-            "items": [record.model_dump(mode="json") for record in records],
-            "next_cursor": next_cursor,
-        })
+        return EventPage.model_validate(
+            {
+                "items": [record.model_dump(mode="json") for record in records],
+                "next_cursor": next_cursor,
+            }
+        )
 
     @app.get("/api/events/stream")
     def stream_events(
@@ -165,7 +330,9 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
         async def generate() -> AsyncIterator[str]:
             cursor = after
             while True:
-                records = runtime.store.read_records(after=cursor, run_id=run_id, limit=500)
+                records = runtime.store.read_records(
+                    after=cursor, run_id=run_id, limit=500
+                )
                 for record in records:
                     cursor = record.cursor
                     data = {
@@ -173,7 +340,9 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
                         "type": record.event.type,
                         "event": record.event.model_dump(mode="json"),
                     }
-                    encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                    encoded = json.dumps(
+                        data, ensure_ascii=False, separators=(",", ":")
+                    )
                     yield f"id: {record.cursor}\nevent: runtime\ndata: {encoded}\n\n"
                 if once:
                     break
@@ -214,5 +383,7 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
 
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if frontend_dist.exists():
-        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="control-room")
+        app.mount(
+            "/", StaticFiles(directory=frontend_dist, html=True), name="control-room"
+        )
     return app

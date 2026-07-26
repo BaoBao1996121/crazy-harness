@@ -7,11 +7,16 @@ export type RunCreated = components["schemas"]["RunCreated"];
 export type CancelResult = components["schemas"]["CancelResult"];
 export type TaskRequest = components["schemas"]["TaskRequest"];
 export type KernelDecision = components["schemas"]["KernelDecision"];
-export type PairedEvalRequest = components["schemas"]["PairedEvalRequest"];
+export type PairedEvalRequest = components["schemas"]["PairedEvalCreateRequest"];
 export type PairedEvalDraft = Omit<PairedEvalRequest, "request_id">;
 export type PairedEvalCreated = components["schemas"]["PairedEvalCreated"];
 export type PairedEvalReport = components["schemas"]["PairedEvalReport"];
 export type PairedEvalArmReport = components["schemas"]["PairedEvalArmReport"];
+export type EvalCampaignRequest = components["schemas"]["EvalCampaignRequest"];
+export type EvalCampaignDraft = Omit<EvalCampaignRequest, "request_id">;
+export type EvalCampaignCreated = components["schemas"]["EvalCampaignCreated"];
+export type EvalCampaignReport = components["schemas"]["EvalCampaignReport"];
+export type CampaignTrialSummary = components["schemas"]["CampaignTrialSummary"];
 export type FaultPoint =
   | "after_candidate_persisted"
   | "after_model_persisted"
@@ -23,6 +28,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
+    readonly retryable?: boolean,
   ) {
     super(message);
     this.name = "ApiError";
@@ -36,8 +43,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    throw new ApiError(detail, response.status);
+    const detail = body.detail;
+    const structured = typeof detail === "object" && detail !== null
+      ? detail as { code?: unknown; message?: unknown; retryable?: unknown }
+      : undefined;
+    const message = typeof detail === "string"
+      ? detail
+      : typeof structured?.message === "string"
+        ? structured.message
+        : JSON.stringify(detail);
+    throw new ApiError(
+      message,
+      response.status,
+      typeof structured?.code === "string" ? structured.code : undefined,
+      typeof structured?.retryable === "boolean" ? structured.retryable : undefined,
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -55,6 +75,27 @@ export const api = {
     request<PairedEvalReport>(`/api/evals/pairs/${encodeURIComponent(evalId)}/drain`, {
       method: "POST",
     }),
+  createEvalCampaign: (body: EvalCampaignRequest) =>
+    request<EvalCampaignCreated>("/api/evals/campaigns", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listEvalCampaigns: () =>
+    request<EvalCampaignReport[]>("/api/evals/campaigns"),
+  evalCampaign: (campaignId: string) =>
+    request<EvalCampaignReport>(
+      `/api/evals/campaigns/${encodeURIComponent(campaignId)}`,
+    ),
+  drainEvalCampaign: (campaignId: string) =>
+    request<EvalCampaignReport>(
+      `/api/evals/campaigns/${encodeURIComponent(campaignId)}/drain`,
+      { method: "POST" },
+    ),
+  cancelEvalCampaign: (campaignId: string) =>
+    request<EvalCampaignReport>(
+      `/api/evals/campaigns/${encodeURIComponent(campaignId)}/cancel`,
+      { method: "POST" },
+    ),
   createRun: (body: TaskRequest) =>
     request<RunCreated>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   drainRun: (runId: string) =>

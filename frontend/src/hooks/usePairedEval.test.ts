@@ -16,6 +16,12 @@ describe("paired eval state", () => {
     expect(resolveInitialEvalId("", null)).toBeUndefined();
   });
 
+  it("defers Eval restoration while a paid Campaign request is unconfirmed", () => {
+    expect(resolveInitialEvalId("?eval=eval_shared", "eval_stored", true))
+      .toBeUndefined();
+    expect(resolveInitialEvalId("", "eval_stored", true)).toBeUndefined();
+  });
+
   it("overwrites stale storage when the initial URL names an eval", () => {
     const storage = {
       getItem: vi.fn().mockReturnValue("eval_stale"),

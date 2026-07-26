@@ -5,6 +5,7 @@ import {
   Database,
   FlaskConical,
   Gauge,
+  Layers3,
   ListTodo,
   Radio,
   Scale,
@@ -22,6 +23,7 @@ interface TopBarProps {
   busy: boolean;
   onNewRun: () => void;
   onNewEval: () => void;
+  onNewCampaign: () => void;
   onCancel: () => void;
   onChaos: () => void;
 }
@@ -33,6 +35,7 @@ export function TopBar({
   busy,
   onNewRun,
   onNewEval,
+  onNewCampaign,
   onCancel,
   onChaos,
 }: TopBarProps) {
@@ -117,6 +120,15 @@ export function TopBar({
         >
           <Scale size={17} aria-hidden="true" />
           <span>公平评测 / Eval</span>
+        </button>
+        <button
+          className="icon-command campaign-command"
+          onClick={onNewCampaign}
+          disabled={busy}
+          title="创建多轮配对评测 / Create eval campaign"
+        >
+          <Layers3 size={17} aria-hidden="true" />
+          <span>多轮评测 / Campaign</span>
         </button>
         <button
           className="icon-command primary"

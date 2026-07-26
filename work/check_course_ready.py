@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "runs" / "course_ready"
 LEARNER_COMPLETION_MARKER = "LEARNER_COMPLETED.md"
 DEFAULT_CHECK_TIMEOUT_SECONDS = 300
-REFERENCE_SUITE_TIMEOUT_SECONDS = 600
+REFERENCE_SUITE_TIMEOUT_SECONDS = 1800
 BUG_CARD_TIMEOUT_SECONDS = 60
 
 
@@ -90,8 +90,8 @@ def main() -> int:
     python = sys.executable
     checks = [
         lab_asset_check(),
-        # 2026-07-18 Windows 全套实测约 314 秒；600 秒保留约 2x 余量，
-        # 其他检查仍使用 300 秒，避免掩盖局部挂死。
+        # 2026-07-26 Windows 全套实测 1105.26 秒；1800 秒保留约 1.6x 余量。
+        # 这是发布级门禁；日常探索使用 changed/smoke 分层，避免等待全套慢测。
         run_check(
             "reference_suite",
             [python, "-m", "pytest", "-q"],

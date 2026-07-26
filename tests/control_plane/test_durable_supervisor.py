@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+import pytest
+
 from crazy_harness.control_plane.kernel import (
     CommandCandidate,
     CommandKind,
@@ -557,3 +559,390 @@ def test_kernel_rejects_false_completion_ready_plan(tmp_path):
 
     assert decision.accepted is False
     assert decision.reason == "completion_plan_missing_stage_results:evidence"
+
+
+def test_capacity_rejection_replays_as_one_durable_supervisor_nudge(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    runtime.store.append(
+        Event(
+            id="capacity-run-created",
+            run_id="run-capacity",
+            task_id="task-capacity",
+            type="run.created",
+            source="test",
+            payload={"title": "Capacity recovery", "brief": "Recover rejected planning."},
+        )
+    )
+    rejection = runtime.store.append(
+        Event(
+            id="capacity-rejection",
+            run_id="run-capacity",
+            task_id="task-capacity",
+            type="candidate.rejected",
+            source="control.kernel",
+            payload={
+                "candidate_id": "candidate-capacity",
+                "idempotency_key": "plan-capacity",
+                "kind": "plan_patch",
+                "reason": "agent_concurrency_exceeded:scout",
+            },
+        )
+    )
+
+    runtime._reconcile_routes()
+
+    nudges = [
+        event
+        for event in runtime.store.read_all(run_id="run-capacity")
+        if event.type == "agent.nudged"
+    ]
+    assert len(nudges) == 1
+    assert nudges[0].causation_id == rejection.id
+    assert nudges[0].payload == {
+        "agent_id": "coordinator",
+        "candidate_id": "candidate-capacity",
+        "kind": "capacity_replan",
+        "message": "Plan admission raced with current agent capacity; recompile from durable status.",
+        "reason": "agent_concurrency_exceeded:scout",
+        "rejected_event_id": rejection.id,
+    }
+    pending = runtime.mailboxes["coordinator"].peek()
+    assert pending is not None
+    assert pending.event.id == nudges[0].id
+
+    runtime._reconcile_routes()
+    recovered = ResidentRuntime(tmp_path)
+    recovered._reconcile_routes()
+
+    recovered_nudges = [
+        event
+        for event in recovered.store.read_all(run_id="run-capacity")
+        if event.type == "agent.nudged"
+    ]
+    assert [event.id for event in recovered_nudges] == [nudges[0].id]
+    recovered_pending = recovered.mailboxes["coordinator"].peek()
+    assert recovered_pending is not None
+    assert recovered_pending.event.id == nudges[0].id
+
+
+def test_capacity_nudge_replans_from_global_load_and_selects_backup(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    stage = TeamStageSpec(
+        stage_id="inspect",
+        result_kind="evidence",
+        goal="Inspect the repository.",
+        required_capabilities=frozenset({"repo.inspect"}),
+        exit_criteria=("evidence persisted",),
+    )
+    contract = TeamContract(contract_id="capacity-team", stages=(stage,))
+    runtime.store.append(
+        Event(
+            id="busy-run-created",
+            run_id="run-busy",
+            task_id="task-busy",
+            type="run.created",
+            source="test",
+            payload={
+                "title": "Busy scout",
+                "brief": "Hold global capacity.",
+                "team_contract": contract.model_dump(mode="json"),
+            },
+        )
+    )
+    busy_proposal = AssignmentProposal(
+        assignment_id="run-busy:inspect:attempt:1",
+        stage_id="inspect",
+        attempt=1,
+        agent_id="scout",
+        goal=stage.goal,
+        required_capabilities=stage.required_capabilities,
+        exit_criteria=stage.exit_criteria,
+        result_kind=stage.result_kind,
+        contract_version=contract.version,
+        lease_seconds=contract.lease_seconds,
+    )
+    busy_patch = PlanPatch(
+        revision=1,
+        contract_id=contract.contract_id,
+        contract_version=contract.version,
+        reason="occupy scout",
+        stages=(StagePlanView(stage_id="inspect", state="active", agent_id="scout"),),
+        assignments=(busy_proposal,),
+    )
+    busy_decision = runtime.kernel.submit(
+        CommandCandidate(
+            candidate_id="candidate-busy-scout",
+            idempotency_key="plan-busy-scout",
+            run_id="run-busy",
+            task_id="task-busy",
+            actor_id="coordinator",
+            kind=CommandKind.PLAN_PATCH,
+            payload=busy_patch.command_payload(),
+        )
+    )
+    assert busy_decision.accepted is True
+
+    runtime.store.append(
+        Event(
+            id="waiting-run-created",
+            run_id="run-waiting",
+            task_id="task-waiting",
+            type="run.created",
+            source="test",
+            payload={
+                "title": "Waiting team",
+                "brief": "Use current global capacity.",
+                "team_contract": contract.model_dump(mode="json"),
+            },
+        )
+    )
+    runtime.store.append(
+        Event(
+            id="waiting-capacity-rejection",
+            run_id="run-waiting",
+            task_id="task-waiting",
+            type="candidate.rejected",
+            source="control.kernel",
+            payload={
+                "candidate_id": "candidate-waiting-capacity",
+                "idempotency_key": "plan-waiting-capacity",
+                "kind": "plan_patch",
+                "reason": "agent_concurrency_exceeded:scout",
+            },
+        )
+    )
+
+    runtime._reconcile_routes()
+    nudge_delivery = runtime.mailboxes["coordinator"].peek(
+        lambda event: event.run_id == "run-waiting"
+    )
+    assert nudge_delivery is not None
+    runtime._supervisor_step(nudge_delivery)
+
+    assignments = runtime.store.snapshot(run_id="run-waiting")["assignments"]
+    assert [(item["stage_id"], item["agent_id"]) for item in assignments] == [
+        ("inspect", "scout-backup")
+    ]
+    capacity_rejections = [
+        event
+        for event in runtime.store.read_all(run_id="run-waiting")
+        if event.type == "candidate.rejected"
+        and str(event.payload.get("reason", "")).startswith(
+            "agent_concurrency_exceeded:"
+        )
+    ]
+    assert [event.id for event in capacity_rejections] == [
+        "waiting-capacity-rejection"
+    ]
+
+
+def test_transient_capacity_waits_for_agent_idle_and_then_resumes(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    stage = TeamStageSpec(
+        stage_id="repair",
+        result_kind="artifact",
+        goal="Build the artifact.",
+        required_capabilities=frozenset({"artifact.compose"}),
+        exit_criteria=("artifact persisted",),
+    )
+    contract = TeamContract(contract_id="capacity-wait", stages=(stage,))
+    runtime.store.append(
+        Event(
+            id="capacity-holder-run",
+            run_id="run-capacity-holder",
+            task_id="task-capacity-holder",
+            type="run.created",
+            source="test",
+            payload={
+                "title": "Capacity holder",
+                "brief": "Occupy Builder.",
+                "team_contract": contract.model_dump(mode="json"),
+            },
+        )
+    )
+    holder_proposal = AssignmentProposal(
+        assignment_id="run-capacity-holder:repair:attempt:1",
+        stage_id="repair",
+        attempt=1,
+        agent_id="builder",
+        goal=stage.goal,
+        required_capabilities=stage.required_capabilities,
+        exit_criteria=stage.exit_criteria,
+        result_kind=stage.result_kind,
+        contract_version=contract.version,
+        lease_seconds=contract.lease_seconds,
+    )
+    holder_patch = PlanPatch(
+        revision=1,
+        contract_id=contract.contract_id,
+        contract_version=contract.version,
+        reason="occupy builder",
+        stages=(StagePlanView(stage_id="repair", state="active", agent_id="builder"),),
+        assignments=(holder_proposal,),
+    )
+    holder_decision = runtime.kernel.submit(
+        CommandCandidate(
+            candidate_id="candidate-capacity-holder",
+            idempotency_key="plan-capacity-holder",
+            run_id="run-capacity-holder",
+            task_id="task-capacity-holder",
+            actor_id="coordinator",
+            kind=CommandKind.PLAN_PATCH,
+            payload=holder_patch.command_payload(),
+        )
+    )
+    assert holder_decision.accepted is True
+
+    runtime.store.append(
+        Event(
+            id="capacity-waiter-run",
+            run_id="run-capacity-waiter",
+            task_id="task-capacity-waiter",
+            type="run.created",
+            source="test",
+            payload={
+                "title": "Capacity waiter",
+                "brief": "Wait for Builder.",
+                "team_contract": contract.model_dump(mode="json"),
+            },
+        )
+    )
+    trigger = runtime.store.append(
+        Event(
+            id="capacity-waiter-trigger",
+            run_id="run-capacity-waiter",
+            task_id="task-capacity-waiter",
+            type="event.external.received",
+            source="test",
+            payload={"receiver": "coordinator"},
+        )
+    )
+    ingress = runtime.mailboxes["coordinator"].send(
+        trigger, delivery_id="capacity-waiter-ingress"
+    )
+
+    runtime._supervisor_step(ingress)
+    runtime.mailboxes["coordinator"].ack(ingress.delivery_id)
+
+    waiting_events = [
+        event
+        for event in runtime.store.read_all(run_id="run-capacity-waiter")
+        if event.type == "orchestration.capacity.waiting"
+    ]
+    assert len(waiting_events) == 1
+    assert not any(
+        event.type in {"orchestration.blocked", "run.paused"}
+        for event in runtime.store.read_all(run_id="run-capacity-waiter")
+    )
+    assert runtime.store.snapshot(run_id="run-capacity-waiter")["assignments"] == []
+
+    holder_lease = runtime.store.snapshot(run_id="run-capacity-holder")["leases"][0]
+    released_at = datetime.now().astimezone()
+    runtime.store.append(
+        Event(
+            id="capacity-holder-released",
+            run_id="run-capacity-holder",
+            task_id="task-capacity-holder",
+            type="assignment.lease.released",
+            source="test",
+            payload={
+                "lease_id": holder_lease["lease_id"],
+                "assignment_id": holder_lease["assignment_id"],
+                "stage_id": "repair",
+                "agent_id": "builder",
+                "released_at": released_at.isoformat(),
+                "reason": "test_capacity_released",
+            },
+        )
+    )
+    runtime.store.append(
+        Event(
+            id="capacity-holder-idle",
+            run_id="run-capacity-holder",
+            task_id="task-capacity-holder",
+            type="runtime.agent.idle",
+            source="runtime.scheduler",
+            payload={"agent_id": "builder", "in_flight": 0},
+        )
+    )
+
+    runtime._reconcile_routes()
+    capacity_nudge = runtime.mailboxes["coordinator"].peek(
+        lambda event: event.run_id == "run-capacity-waiter"
+    )
+    assert capacity_nudge is not None
+    assert capacity_nudge.event.payload["kind"] == "capacity_available"
+    runtime._supervisor_step(capacity_nudge)
+
+    assignments = runtime.store.snapshot(run_id="run-capacity-waiter")["assignments"]
+    assert [(item["stage_id"], item["agent_id"]) for item in assignments] == [
+        ("repair", "builder")
+    ]
+    resumed = [
+        event
+        for event in runtime.store.read_all(run_id="run-capacity-waiter")
+        if event.type == "orchestration.capacity.resumed"
+    ]
+    assert len(resumed) == 1
+    assert resumed[0].payload["waiting_event_id"] == waiting_events[0].id
+
+
+def test_waiting_registered_after_capacity_change_rechecks_current_projection(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    runtime.store.append(
+        Event(
+            id="late-wait-run",
+            run_id="run-late-wait",
+            task_id="task-late-wait",
+            type="run.created",
+            source="test",
+            payload={"title": "Late wait", "brief": "Capacity changed first."},
+        )
+    )
+
+    # This models release/recovery being routed before a stale Supervisor
+    # decision persists its wait. The wait must recheck the current projection.
+    waiting = runtime.store.append(
+        Event(
+            id="late-capacity-wait",
+            run_id="run-late-wait",
+            task_id="task-late-wait",
+            type="orchestration.capacity.waiting",
+            source="runtime.supervisor",
+            payload={
+                "reason": "agent_capacity_unavailable:repair",
+                "plan_revision": 1,
+                "stage_ids": ["repair"],
+                "required_capability_sets": [["artifact.compose"]],
+            },
+        )
+    )
+
+    runtime._reconcile_routes()
+
+    nudge = runtime.mailboxes["coordinator"].peek(
+        lambda event: event.run_id == waiting.run_id
+        and event.payload.get("waiting_event_id") == waiting.id
+    )
+    assert nudge is not None
+    assert nudge.event.payload["kind"] == "capacity_available"
+
+
+def test_capacity_event_routing_does_not_rescan_the_full_event_log(tmp_path, monkeypatch):
+    runtime = ResidentRuntime(tmp_path)
+    capacity_event = Event(
+        id="capacity-without-history-scan",
+        run_id="control-plane",
+        task_id="agent-builder",
+        type="runtime.agent.recovered",
+        source="test",
+        payload={"agent_id": "builder"},
+    )
+
+    monkeypatch.setattr(
+        runtime.store,
+        "read_all",
+        lambda *args, **kwargs: pytest.fail("capacity routing rescanned EventLog"),
+    )
+
+    assert runtime._route_capacity_waiters(capacity_event) is False

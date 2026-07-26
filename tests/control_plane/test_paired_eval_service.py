@@ -9,7 +9,7 @@ from crazy_harness.control_plane.paired_evals import (
 )
 from crazy_harness.control_plane.store import SQLiteEventStore
 from crazy_harness.core.events import Event
-from crazy_harness.core.evals import PairedEvalContract
+from crazy_harness.core.evals import PairedEvalContract, RecommendationOutcome
 from crazy_harness.taskpacks import RepoMaintainerScorer, RepoMaintainerTaskPack
 
 
@@ -148,20 +148,23 @@ def test_report_rejects_scorer_version_drift_after_runtime_upgrade(tmp_path):
         )
 
     upgraded_service = PairedEvalService(store, scorer=UpgradedScorer())
+    assert upgraded_service.finalize_ready() == 1
+    report = upgraded_service.report(created.eval_id)
+    assert report.status == "completed"
+    assert report.evidence_valid is False
+    assert report.recommendation is not None
+    assert report.recommendation.outcome is (
+        RecommendationOutcome.INSUFFICIENT_LIVE_EVIDENCE
+    )
+    assert report.invalid_reasons == (
+        "active scorer repo-maintainer-v3 does not match persisted scorer "
+        "repo-maintainer-v2",
+    )
     assert upgraded_service.finalize_ready() == 0
-    failures = [
-        event
-        for event in store.read_all(run_id=created.eval_id)
-        if event.type == "eval.pair.finalization.failed"
-    ]
-    assert len(failures) == 1
-    assert upgraded_service.finalize_ready() == 0
-    assert sum(
+    assert not any(
         event.type == "eval.pair.finalization.failed"
         for event in store.read_all(run_id=created.eval_id)
-    ) == 1
-    with pytest.raises(RuntimeError, match="scorer version"):
-        upgraded_service.finalize(created.eval_id)
+    )
 
 
 def test_committed_pair_resumes_with_the_same_arms_after_response_loss(tmp_path):

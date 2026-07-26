@@ -15,6 +15,12 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from pydantic import BaseModel, ConfigDict, Field
 
 from crazy_harness.control_plane.context import PersistentContextCompiler
+from crazy_harness.control_plane.eval_campaigns import (
+    EvalCampaignCreated,
+    EvalCampaignReport,
+    EvalCampaignRequest,
+    EvalCampaignService,
+)
 from crazy_harness.control_plane.kernel import (
     CommandCandidate,
     CommandKind,
@@ -33,6 +39,7 @@ from crazy_harness.control_plane.paired_evals import (
     PairedEvalReport,
     PairedEvalRequest,
     PairedEvalService,
+    paired_eval_id,
     paired_input_hash,
 )
 from crazy_harness.control_plane.store import (
@@ -310,11 +317,15 @@ class ResidentScheduler:
                 timeout,
             )
 
-    def run_once(self) -> bool:
+    def run_once(
+        self,
+        *,
+        allowed_run_ids: frozenset[str] | None = None,
+    ) -> bool:
         """Execute one reserved Delivery synchronously for deterministic stepping."""
 
         with self._condition:
-            selected = self._reserve_next_locked()
+            selected = self._reserve_next_locked(allowed_run_ids=allowed_run_ids)
         if selected is None:
             return False
         self._execute_reserved(*selected)
@@ -629,6 +640,8 @@ class ResidentScheduler:
 
     def _reserve_next_locked(
         self,
+        *,
+        allowed_run_ids: frozenset[str] | None = None,
     ) -> (
         tuple[
             str,
@@ -652,6 +665,11 @@ class ResidentScheduler:
             if self._worker_in_flight_locked(worker_id) >= max_concurrency:
                 continue
             for delivery in mailbox.pending():
+                if (
+                    allowed_run_ids is not None
+                    and delivery.event.run_id not in allowed_run_ids
+                ):
+                    continue
                 if delivery.event.run_id in self._cancelled_runs:
                     continue
                 reservation_key = (worker_id, delivery.delivery_id)
@@ -1198,6 +1216,7 @@ class ResidentRuntime:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteEventStore(self.data_dir / "control_plane.db")
         self.eval_service = PairedEvalService(self.store)
+        self.campaign_service = EvalCampaignService(self.store)
         self.model_call_authority = PersistentModelCallAuthority(self.store)
         self.artifacts = ArtifactStore(self.data_dir / "artifacts")
         self.faults = FaultController()
@@ -1276,6 +1295,7 @@ class ResidentRuntime:
         )
         self._route_cursor = 0
         self._route_lock = threading.RLock()
+        self._capacity_waiters: dict[str, Event] = {}
         self.eval_service.recover_pending(
             resume=lambda request: self.create_paired_eval(
                 request,
@@ -1319,8 +1339,8 @@ class ResidentRuntime:
                 self._reconcile_failed_runs()
                 stage = "cancellation_reconciliation"
                 self._reconcile_cancellations()
-                stage = "paired_eval_finalization"
-                if self.eval_service.finalize_ready():
+                stage = "eval_control"
+                if self._advance_eval_control():
                     continue
                 stage = "lease_expiry"
                 if self.expire_due_leases():
@@ -1376,7 +1396,10 @@ class ResidentRuntime:
         request: PairedEvalRequest,
         *,
         recovering: bool = False,
+        release_arms: bool | None = None,
     ) -> PairedEvalCreated:
+        if release_arms is False and request.release_policy == "immediate":
+            request = request.model_copy(update={"release_policy": "manual"})
         task_request = TaskRequest(
             title=request.title,
             brief=request.brief,
@@ -1416,13 +1439,84 @@ class ResidentRuntime:
                 run_id, reason="paired_eval_creation_failed"
             ),
             fail_precommit=not recovering,
+            release_arms=release_arms,
         )
 
     def paired_eval(self, eval_id: str) -> PairedEvalReport:
         return self.eval_service.report(eval_id)
 
+    def release_paired_eval(self, eval_id: str) -> PairedEvalCreated:
+        return self.eval_service.release(
+            eval_id,
+            release_arm=lambda mode, identity: self._release_prepared_task(
+                mode, identity
+            ),
+        )
+
     def finalize_paired_eval(self, eval_id: str) -> PairedEvalReport:
         return self.eval_service.finalize(eval_id)
+
+    def create_eval_campaign(
+        self,
+        request: EvalCampaignRequest,
+    ) -> EvalCampaignCreated:
+        if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
+            campaign_id = self.campaign_service.campaign_id(request.request_id)
+            try:
+                self.campaign_service.contract(campaign_id)
+            except KeyError as exc:
+                raise ValueError(
+                    "DEEPSEEK_API_KEY is required for deepseek mode"
+                ) from exc
+        created = self.campaign_service.create(request)
+        self.scheduler.signal()
+        return created
+
+    def eval_campaign(self, campaign_id: str) -> EvalCampaignReport:
+        return self.campaign_service.report(campaign_id)
+
+    def finalize_eval_campaign(self, campaign_id: str) -> EvalCampaignReport:
+        return self.campaign_service.finalize(campaign_id)
+
+    def cancel_eval_campaign(self, campaign_id: str) -> EvalCampaignReport:
+        def cancel_pair(eval_id: str) -> None:
+            for run_id in self.eval_service.prepared_run_ids(eval_id):
+                self.cancel_run(
+                    run_id,
+                    reason=f"parent_campaign_cancelled:{campaign_id}",
+                )
+
+        return self.campaign_service.cancel(
+            campaign_id,
+            cancel_pair=cancel_pair,
+        )
+
+    def _advance_eval_control(self) -> bool:
+        if self.eval_service.finalize_ready():
+            return True
+        if self.campaign_service.advance_ready(
+            create_pair=self._create_campaign_pair,
+            pair_contract=self.eval_service.contract,
+            release_pair=self.release_paired_eval,
+            pair_report=self.paired_eval,
+        ):
+            return True
+        return bool(self.campaign_service.finalize_ready())
+
+    def _create_campaign_pair(
+        self,
+        request: PairedEvalRequest,
+    ) -> PairedEvalCreated:
+        eval_id = paired_eval_id(request.request_id)
+        recovering = any(
+            event.type == "eval.pair.requested"
+            for event in self.store.read_all(run_id=eval_id)
+        )
+        return self.create_paired_eval(
+            request,
+            recovering=recovering,
+            release_arms=False,
+        )
 
     def _requested_model_profile(
         self,
@@ -1955,10 +2049,19 @@ class ResidentRuntime:
     def run_until_idle(self, *, max_steps: int = 100) -> int:
         started_at = self.scheduler.completed_steps
         waits_without_progress = 0
+        eval_control_steps = 0
         while self.scheduler.completed_steps - started_at < max_steps:
             self._reconcile_routes()
             self._reconcile_failed_runs()
             self._reconcile_cancellations()
+            if self._advance_eval_control():
+                eval_control_steps += 1
+                waits_without_progress = 0
+                if eval_control_steps >= max_steps:
+                    raise RuntimeError(
+                        f"eval control did not become idle after {max_steps} steps"
+                    )
+                continue
             if self.scheduler.run_once():
                 waits_without_progress = 0
                 continue
@@ -1992,6 +2095,95 @@ class ResidentRuntime:
         ) and self.scheduler.has_pending():
             raise RuntimeError(
                 f"resident runtime did not become idle after {max_steps} steps"
+            )
+        return steps
+
+    def run_eval_campaign_until_idle(
+        self,
+        campaign_id: str,
+        *,
+        max_steps: int = 1500,
+    ) -> int:
+        """Synchronously advance only one Campaign and its pre-registered Runs."""
+
+        contract = self.campaign_service.contract(campaign_id)
+        steps = 0
+        waits_without_progress = 0
+        while steps < max_steps:
+            # Durable control facts outrank queued work. In particular, a
+            # persisted failure/cancel request must build its dispatch fence
+            # before this scoped loop is allowed to reserve a child Delivery.
+            self._reconcile_routes()
+            self._reconcile_failed_runs()
+            self._reconcile_cancellations()
+            campaign = self.campaign_service.report(campaign_id)
+            if campaign.status != "running":
+                return steps
+
+            target_run_ids: set[str] = set()
+            pair_finalized = False
+            for trial in contract.trials:
+                try:
+                    pair_contract = self.eval_service.contract(trial.eval_id)
+                except KeyError:
+                    continue
+                target_run_ids.update(
+                    {
+                        pair_contract.single.run_id,
+                        pair_contract.team.run_id,
+                    }
+                )
+                before = self.eval_service.report(trial.eval_id)
+                after = self.eval_service.finalize(trial.eval_id)
+                if before.status != after.status:
+                    steps += 1
+                    pair_finalized = True
+                    break
+            if pair_finalized:
+                waits_without_progress = 0
+                continue
+
+            if self.campaign_service.advance_one(
+                campaign_id,
+                create_pair=self._create_campaign_pair,
+                pair_contract=self.eval_service.contract,
+                release_pair=self.release_paired_eval,
+                pair_report=self.paired_eval,
+            ):
+                steps += 1
+                waits_without_progress = 0
+                continue
+
+            finalized = self.campaign_service.finalize(campaign_id)
+            if finalized.status != campaign.status:
+                steps += 1
+                waits_without_progress = 0
+                continue
+
+            allowed = frozenset(target_run_ids)
+            if allowed and self.scheduler.run_once(allowed_run_ids=allowed):
+                steps += 1
+                waits_without_progress = 0
+                continue
+            if allowed and any(
+                self.scheduler.in_flight_for_run(run_id) for run_id in allowed
+            ):
+                before = self.scheduler.completed_steps
+                self.scheduler.wait_for_progress(completed_steps=before, timeout=0.05)
+                waits_without_progress = (
+                    waits_without_progress + 1
+                    if self.scheduler.completed_steps == before
+                    else 0
+                )
+                if waits_without_progress < max_steps:
+                    continue
+            break
+
+        if self.campaign_service.report(campaign_id).status == "running" and (
+            steps >= max_steps or waits_without_progress >= max_steps
+        ):
+            raise RuntimeError(
+                f"eval campaign did not become idle after {max_steps} scoped steps"
             )
         return steps
 
@@ -2490,7 +2682,51 @@ class ResidentRuntime:
                 f"{event.run_id}:coordinator:plan:{patch.revision}:trigger:{event.id}"
             ),
         )
+        waiting_event_id = (
+            event.payload.get("waiting_event_id")
+            if event.type == "agent.nudged"
+            and event.source == "runtime.supervisor"
+            and event.payload.get("kind") == "capacity_available"
+            else None
+        )
+        if waiting_event_id:
+            self._append_deterministic(
+                event,
+                f"capacity-wait-consumed:{waiting_event_id}",
+                "orchestration.capacity.resumed",
+                {
+                    "waiting_event_id": waiting_event_id,
+                    "nudge_event_id": event.id,
+                    "candidate_id": decision.candidate_id,
+                },
+                source="runtime.supervisor",
+            )
         if not decision.accepted:
+            return
+        capacity_waiting = bool(patch.waiting_stage_ids)
+        if capacity_waiting:
+            stage_ids = patch.waiting_stage_ids
+            stages = {stage.stage_id: stage for stage in contract.stages}
+            waiting = self._append_deterministic(
+                event,
+                f"orchestration-capacity-waiting:{event.run_id}:{patch.revision}",
+                "orchestration.capacity.waiting",
+                {
+                    "reason": patch.waiting_reason,
+                    "plan_revision": patch.revision,
+                    "stage_ids": list(stage_ids),
+                    "required_capability_sets": [
+                        sorted(stages[stage_id].required_capabilities)
+                        for stage_id in stage_ids
+                        if stage_id in stages
+                    ],
+                },
+                source="runtime.supervisor",
+            )
+            # A release may have raced ahead of this persisted wait. Rechecking
+            # the current projection here gives the wait sticky-signal semantics.
+            with self._route_lock:
+                self._route_event(waiting)
             return
         if patch.blocked_reason:
             self._append_deterministic(
@@ -2552,10 +2788,18 @@ class ResidentRuntime:
         contract: TeamContract,
     ) -> SupervisorContext:
         del contract
-        snapshot = self.store.snapshot(run_id=trigger.run_id)
-        assignments = snapshot["assignments"]
-        active_leases = [
-            lease for lease in snapshot["leases"] if lease.get("status") == "active"
+        run_snapshot = self.store.snapshot(run_id=trigger.run_id)
+        global_snapshot = self.store.snapshot()
+        assignments = run_snapshot["assignments"]
+        run_active_leases = [
+            lease
+            for lease in run_snapshot["leases"]
+            if lease.get("status") == "active"
+        ]
+        global_active_leases = [
+            lease
+            for lease in global_snapshot["leases"]
+            if lease.get("status") == "active"
         ]
         completed = frozenset(
             str(item["stage_id"])
@@ -2573,9 +2817,11 @@ class ResidentRuntime:
 
         active_loads: dict[str, int] = {}
         active_stage_agents: dict[str, str] = {}
-        for lease in active_leases:
+        for lease in global_active_leases:
             agent_id = str(lease["agent_id"])
             active_loads[agent_id] = active_loads.get(agent_id, 0) + 1
+        for lease in run_active_leases:
+            agent_id = str(lease["agent_id"])
             if lease.get("stage_id"):
                 active_stage_agents[str(lease["stage_id"])] = agent_id
 
@@ -2586,9 +2832,11 @@ class ResidentRuntime:
                 capabilities=list(agent.get("capabilities", [])),
                 max_concurrency=int(agent.get("max_concurrency", 1)),
             )
-            for agent in snapshot["agents"]
+            for agent in global_snapshot["agents"]
         )
-        agent_states = {str(agent["agent_id"]): agent for agent in snapshot["agents"]}
+        agent_states = {
+            str(agent["agent_id"]): agent for agent in global_snapshot["agents"]
+        }
         statuses = {
             card.agent_id: AgentStatus(
                 agent_states[card.agent_id].get("status", AgentStatus.OFFLINE.value)
@@ -2896,12 +3144,73 @@ class ResidentRuntime:
             return routed
 
     def _route_event(self, event: Event) -> bool:
+        if event.type == "orchestration.capacity.waiting":
+            run = self.store.projection("run", event.run_id) or {}
+            if run.get("status") != "running":
+                self._capacity_waiters.pop(event.run_id, None)
+                return False
+            self._capacity_waiters[event.run_id] = event
+            return self._route_capacity_waiter_if_ready(event)
+        if event.type == "orchestration.capacity.resumed":
+            waiting = self._capacity_waiters.get(event.run_id)
+            if waiting is not None and waiting.id == event.payload.get(
+                "waiting_event_id"
+            ):
+                self._capacity_waiters.pop(event.run_id, None)
+            return False
+        if event.type in {
+            "run.cancel.requested",
+            "run.succeeded",
+            "run.failed",
+            "run.cancelled",
+        }:
+            self._capacity_waiters.pop(event.run_id, None)
         if event.type == "run.failure.requested":
             self._finalize_failed_run(
                 event,
                 reason=str(event.payload.get("reason", "model call failed")),
             )
             return True
+        if (
+            event.type == "candidate.rejected"
+            and event.payload.get("kind") == CommandKind.PLAN_PATCH.value
+            and str(event.payload.get("reason", "")).startswith(
+                "agent_concurrency_exceeded:"
+            )
+        ):
+            run = self.store.projection("run", event.run_id) or {}
+            if run.get("status") != "running":
+                return False
+            reason = str(event.payload["reason"])
+            nudge = self._append_deterministic(
+                event,
+                f"supervisor-capacity-nudge:{event.id}",
+                "agent.nudged",
+                {
+                    "agent_id": "coordinator",
+                    "candidate_id": event.payload.get("candidate_id"),
+                    "kind": "capacity_replan",
+                    "message": (
+                        "Plan admission raced with current agent capacity; "
+                        "recompile from durable status."
+                    ),
+                    "reason": reason,
+                    "rejected_event_id": event.id,
+                },
+                source="runtime.supervisor",
+            )
+            self._deliver(
+                "coordinator",
+                nudge,
+                delivery_id=f"route:{nudge.id}:coordinator",
+            )
+            return True
+        if event.type in {
+            "agent.registered",
+            "assignment.lease.released",
+            "runtime.agent.recovered",
+        }:
+            return self._route_capacity_waiters(event)
         receiver: str | None = None
         if event.type == "assignment.created":
             if (
@@ -2930,6 +3239,71 @@ class ResidentRuntime:
             return True
         return False
 
+    def _route_capacity_waiters(self, capacity_event: Event) -> bool:
+        routed = False
+        del capacity_event
+        for waiting in sorted(
+            self._capacity_waiters.values(), key=lambda item: item.run_id
+        ):
+            routed = self._route_capacity_waiter_if_ready(waiting) or routed
+        return routed
+
+    def _route_capacity_waiter_if_ready(self, waiting: Event) -> bool:
+        run = self.store.projection("run", waiting.run_id) or {}
+        if run.get("status") != "running":
+            self._capacity_waiters.pop(waiting.run_id, None)
+            return False
+        required_sets = tuple(
+            frozenset(str(capability) for capability in required)
+            for required in waiting.payload.get("required_capability_sets", [])
+            if isinstance(required, list)
+        )
+        if not required_sets:
+            return False
+
+        snapshot = self.store.snapshot()
+        active_loads: dict[str, int] = {}
+        for lease in snapshot["leases"]:
+            if lease.get("status") != "active":
+                continue
+            agent_id = str(lease.get("agent_id", ""))
+            active_loads[agent_id] = active_loads.get(agent_id, 0) + 1
+        available = any(
+            str(agent.get("status")) in {AgentStatus.IDLE.value, AgentStatus.BUSY.value}
+            and active_loads.get(str(agent["agent_id"]), 0)
+            < int(agent.get("max_concurrency", 1))
+            and any(
+                required.issubset(set(agent.get("capabilities", [])))
+                for required in required_sets
+            )
+            for agent in snapshot["agents"]
+        )
+        if not available:
+            return False
+
+        nudge = self._append_deterministic(
+            waiting,
+            f"capacity-available-nudge:{waiting.id}",
+            "agent.nudged",
+            {
+                "agent_id": "coordinator",
+                "kind": "capacity_available",
+                "message": (
+                    "Agent capacity changed; recompile the plan from durable status."
+                ),
+                "reason": waiting.payload.get("reason"),
+                "waiting_event_id": waiting.id,
+            },
+            source="runtime.supervisor",
+            causation_id=waiting.id,
+        )
+        self._deliver(
+            "coordinator",
+            nudge,
+            delivery_id=f"route:{nudge.id}:coordinator",
+        )
+        return True
+
     def _paired_assignment_is_committed(self, assignment: Event) -> bool:
         links = [
             event
@@ -2939,10 +3313,18 @@ class ResidentRuntime:
         if len(links) != 1:
             return False
         eval_id = str(links[0].payload.get("eval_id", ""))
-        return any(
+        eval_events = self.store.read_all(run_id=eval_id)
+        committed = any(
             event.type == "eval.pair.committed"
-            for event in self.store.read_all(run_id=eval_id)
+            for event in eval_events
         )
+        released = any(
+            event.type == "eval.arm.released"
+            and event.payload.get("execution_mode")
+            == assignment.payload.get("execution_mode", "single")
+            for event in eval_events
+        )
+        return committed and released
 
     def _queue_dream(self, succeeded: Event) -> None:
         signal = self._append_deterministic(
