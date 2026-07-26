@@ -1,6 +1,6 @@
 # Composite Checkpoint 复合检查点设计
 
-> 状态：CP0-CP3 已实现并通过真实 HTTP/UI 纵向验收；CP4 已覆盖 Restore 两个发布边界的跨重启恢复，发布回归进行中。第一版限定为本地 `repo-maintainer` 单 Agent、disposable workspace、手动创建与 Fork Restore；Core 契约保持业务无关。
+> 状态：CP0-CP4 已完成；真实 HTTP/UI、Restore 两个发布边界的跨重启恢复、本地 Release 与 GitHub 跨平台 CI 均已通过。第一版限定为本地 `repo-maintainer` 单 Agent、disposable workspace、手动创建与 Fork Restore；Core 契约保持业务无关。
 
 ## 1. 一句话结论
 
@@ -225,7 +225,7 @@ Control Room 第一版只提供三个高信号操作：
 | CP1（完成） | WorkspaceSnapshotStore + CheckpointService | 哈希、路径、Artifact、Effect 与半提交测试 |
 | CP2（完成） | 单 Agent Fork Restore + 恢复胶囊 | 新 Run 可继续 canonical AgentLoop 到成功 |
 | CP3（完成） | HTTP + Control Room + lineage | API、84 条前端测试、桌面/移动截图、真实 UI Restore |
-| CP4（进行中） | Restore Crash Matrix 已完成；发布回归待完成 | 两个故障点跨重启通过；Changed/Core/Release/CI |
+| CP4（完成） | Restore Crash Matrix + 发布 | 两个故障点跨重启；381 passed；Ubuntu/Windows/Frontend CI 全绿 |
 
 ## 13. 后续扩展
 

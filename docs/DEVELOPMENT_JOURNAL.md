@@ -267,3 +267,13 @@
 - **边界**：第一版只支持 `repo-maintainer` 单 Agent 本地工作区；5 分钟 Barrier TTL、2,000 文件和 100 MB 是初始值，尚未做大仓库压测。外部不可逆/Unknown Effect 默认阻止恢复，没有补偿 Adapter；Team 多工作区、容器/Git 快照、自动逐 Turn Checkpoint 与对象 GC 留待后续。当前证据使用 Scripted Provider，不代表真实 DeepSeek 的任务质量。
 
 设计审查：5/5 通过。无新增第三方 Runtime 依赖；测试数、对象大小和 UI 身份均来自本机实测；超时、半提交、篡改、路径逃逸、未闭合调用、不可逆/Unknown Effect 与两个 Restore 崩溃窗口均有处理；TTL/文件数/容量明确为初始值待调优；范围保持单 Agent disposable workspace MVP。
+
+### 22:18 Composite Checkpoint v0.9 发布门禁通过
+
+- **时间**：2026-07-26 22:18:00 +08:00。
+- **动作**：将 Control Plane 和新 Single/Team Run 的行为版本统一为 `v0.9.0-dev`；推送 `feat/composite-checkpoint-v09`，创建 PR #19，并执行本机课程就绪检查与 GitHub Ubuntu 3.11、Windows 3.13、Frontend 三平台 CI。
+- **证据**：本机参考套件 `381 passed, 3 skipped in 1237.91s`，课程检查总用时 `1299.6s`，17/17 required checks 全部通过，状态为 `ready_with_external_gates`；GitHub Ubuntu 后端 `3m34s`、Windows 后端 `15m16s`、Frontend `20s` 全绿。PR 为 `https://github.com/BaoBao1996121/crazy-harness/pull/19`。
+- **效果**：CP0 契约、CP1 快照/服务、CP2 Fork Restore、CP3 HTTP/UI 和 CP4 Crash/Release 已形成可公开复现的完整 MVP；Linux、Windows、Python 3.11/3.13 与生产前端构建都验证了同一提交。
+- **边界**：本机仍未配置 `DEEPSEEK_API_KEY`，Docker CLI/Engine 仍不可用，因此 Live LLM 与真正容器沙箱保持外部门槛；默认分支另有一个 `js-yaml <4.3.0` 的开发依赖 High 告警，将在独立安全 PR 处理，不夹带进 Checkpoint PR。
+
+设计审查：5/5 通过。外部依赖与跨平台兼容由 CI 验证；耗时和测试数字均为实测；本地与远端失败路径无新增红灯；5 分钟/2,000 文件/100 MB 仍是明确的初始阈值；发布范围没有越出单 Agent Composite Checkpoint MVP。
