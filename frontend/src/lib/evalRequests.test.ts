@@ -81,6 +81,44 @@ describe("paired eval request identity", () => {
     ]);
   });
 
+  it("rotates after schema validation rejects the request before persistence", async () => {
+    const generateRequestId = vi
+      .fn()
+      .mockReturnValueOnce("eval-request-invalid")
+      .mockReturnValueOnce("eval-request-corrected")
+      .mockReturnValueOnce("eval-request-next");
+    const requestIds = createEvalRequestIds(generateRequestId);
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("invalid request", 422))
+      .mockResolvedValueOnce({ eval_id: "eval_corrected" });
+    const invalidDraft = {
+      title: "Invalid",
+      brief: "Rejected before persistence.",
+      model_mode: "scripted" as const,
+      task_pack: "repo-maintainer" as const,
+    };
+
+    await expect(
+      submitPairedEval(invalidDraft, requestIds, create),
+    ).rejects.toThrow("invalid request");
+    await expect(
+      submitPairedEval(
+        { ...invalidDraft, title: "Corrected" },
+        requestIds,
+        create,
+      ),
+    ).resolves.toEqual({ eval_id: "eval_corrected" });
+
+    expect(create.mock.calls.map(([request]) => ({
+      id: request.request_id,
+      title: request.title,
+    }))).toEqual([
+      { id: "eval-request-invalid", title: "Invalid" },
+      { id: "eval-request-corrected", title: "Corrected" },
+    ]);
+  });
+
   it("reuses the persisted request and original draft after response loss and page refresh", async () => {
     const storage = memoryStorage();
     const generateRequestId = vi

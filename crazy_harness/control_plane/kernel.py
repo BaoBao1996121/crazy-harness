@@ -1326,6 +1326,7 @@ class ControlKernel:
                         ],
                         "reason": patch.reason,
                         "completion_ready": patch.completion_ready,
+                        "waiting_reason": patch.waiting_reason,
                     },
                     candidate.actor_id,
                 )

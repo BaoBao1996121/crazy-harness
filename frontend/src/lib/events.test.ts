@@ -36,6 +36,39 @@ describe("timeline event vocabulary", () => {
     expect(eventMeta("a2a.policy.denied").tone).toBe("danger");
   });
 
+  it("labels temporary orchestration capacity waiting and recovery in Chinese first", () => {
+    expect(eventMeta("orchestration.capacity.waiting").label).toBe(
+      "等待 Agent 容量 / Waiting for agent capacity",
+    );
+    expect(eventMeta("orchestration.capacity.waiting").tone).toBe("warning");
+    expect(eventMeta("orchestration.capacity.resumed").label).toBe(
+      "Agent 容量恢复 / Agent capacity restored",
+    );
+    expect(eventMeta("orchestration.capacity.resumed").tone).toBe("success");
+  });
+
+  it("renders the durable Eval and Campaign lifecycle in Chinese-first bilingual labels", () => {
+    const expected = {
+      "eval.arm.planned": "评测臂已规划 / Eval arm planned",
+      "eval.arm.created": "评测臂已创建 / Eval arm created",
+      "eval.arm.linked": "评测臂已关联 / Eval arm linked",
+      "eval.arm.released": "评测臂已释放执行 / Eval arm released",
+      "eval.pair.committed": "配对契约已提交 / Eval pair committed",
+      "eval.pair.completed": "配对评测已完成 / Eval pair completed",
+      "eval.campaign.requested": "多轮评测已请求 / Campaign requested",
+      "eval.campaign.created": "多轮评测已创建 / Campaign created",
+      "eval.campaign.trial.started": "Trial 已启动 / Campaign trial started",
+      "eval.campaign.trial.observed": "Trial 证据已观察 / Campaign trial observed",
+      "eval.campaign.completed": "多轮评测已完成 / Campaign completed",
+      "eval.campaign.cancelled": "多轮评测已取消 / Campaign cancelled",
+    };
+
+    for (const [type, label] of Object.entries(expected)) {
+      expect(eventMeta(type).label, type).toBe(label);
+      expect(eventMeta(type).label, type).not.toBe(type);
+    }
+  });
+
   it("gives low-level runtime events a Chinese-first label", () => {
     expect(eventMeta("agent.result.submitted").label).toBe("Agent 结果提交 / Agent result submitted");
     expect(eventMeta("completion.requested").label).toBe("申请完成 / Completion requested");

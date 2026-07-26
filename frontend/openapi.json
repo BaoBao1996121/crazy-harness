@@ -89,7 +89,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PairedEvalRequest"
+                "$ref": "#/components/schemas/PairedEvalCreateRequest"
               }
             }
           },
@@ -180,6 +180,241 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PairedEvalReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/campaigns": {
+      "get": {
+        "summary": "List Eval Campaigns",
+        "operationId": "list_eval_campaigns_api_evals_campaigns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EvalCampaignReport"
+                  },
+                  "type": "array",
+                  "title": "Response List Eval Campaigns Api Evals Campaigns Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Eval Campaign",
+        "operationId": "create_eval_campaign_api_evals_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalCampaignRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCampaignCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid campaign",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Campaign conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/campaigns/{campaign_id}": {
+      "get": {
+        "summary": "Get Eval Campaign",
+        "operationId": "get_eval_campaign_api_evals_campaigns__campaign_id__get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCampaignReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/campaigns/{campaign_id}/drain": {
+      "post": {
+        "summary": "Drain Eval Campaign",
+        "operationId": "drain_eval_campaign_api_evals_campaigns__campaign_id__drain_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCampaignReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/evals/campaigns/{campaign_id}/cancel": {
+      "post": {
+        "summary": "Cancel Eval Campaign",
+        "operationId": "cancel_eval_campaign_api_evals_campaigns__campaign_id__cancel_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCampaignReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cancellation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -642,6 +877,43 @@
         ],
         "title": "AgentView"
       },
+      "ApiErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ApiErrorDetail"
+      },
+      "ApiErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ApiErrorDetail"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ApiErrorResponse"
+      },
       "AssignmentView": {
         "properties": {
           "assignment_id": {
@@ -687,6 +959,414 @@
           "status"
         ],
         "title": "AssignmentView"
+      },
+      "CampaignAggregate": {
+        "properties": {
+          "aggregator_version": {
+            "type": "string",
+            "title": "Aggregator Version"
+          },
+          "sample_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sample Count"
+          },
+          "samples_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Samples Sha256"
+          },
+          "bootstrap_seed_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Bootstrap Seed Sha256"
+          },
+          "hard_reliability_regression": {
+            "type": "boolean",
+            "title": "Hard Reliability Regression"
+          },
+          "success_rate_delta": {
+            "$ref": "#/components/schemas/CampaignMetricEstimate"
+          },
+          "quality_delta": {
+            "$ref": "#/components/schemas/CampaignMetricEstimate"
+          },
+          "cost_ratio": {
+            "$ref": "#/components/schemas/CampaignMetricEstimate"
+          },
+          "duration_ratio": {
+            "$ref": "#/components/schemas/CampaignMetricEstimate"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "aggregator_version",
+          "sample_count",
+          "samples_sha256",
+          "bootstrap_seed_sha256",
+          "hard_reliability_regression",
+          "success_rate_delta",
+          "quality_delta",
+          "cost_ratio",
+          "duration_ratio"
+        ],
+        "title": "CampaignAggregate"
+      },
+      "CampaignBudgetEnvelope": {
+        "properties": {
+          "trial_count": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Trial Count"
+          },
+          "per_arm_max_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Per Arm Max Tokens"
+          },
+          "per_arm_max_cost_usd": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Per Arm Max Cost Usd"
+          },
+          "max_total_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Total Tokens"
+          },
+          "max_total_cost_usd": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Max Total Cost Usd"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trial_count",
+          "per_arm_max_tokens",
+          "per_arm_max_cost_usd",
+          "max_total_tokens",
+          "max_total_cost_usd"
+        ],
+        "title": "CampaignBudgetEnvelope",
+        "description": "父实验对全部 Single/Team Run 的静态最坏预算证明。"
+      },
+      "CampaignMetricEstimate": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": [
+              "success_rate_delta",
+              "quality_delta",
+              "cost_ratio",
+              "duration_ratio"
+            ],
+            "title": "Metric"
+          },
+          "point_ppm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Point Ppm"
+          },
+          "lower_bound_ppm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Bound Ppm"
+          },
+          "upper_bound_ppm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper Bound Ppm"
+          },
+          "sample_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sample Size"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "point_only",
+              "deterministic_paired_percentile"
+            ],
+            "title": "Method"
+          },
+          "resamples": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Resamples"
+          },
+          "familywise_confidence_ppm": {
+            "type": "integer",
+            "exclusiveMaximum": 1000000.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Familywise Confidence Ppm"
+          },
+          "unbounded": {
+            "type": "boolean",
+            "title": "Unbounded",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metric",
+          "point_ppm",
+          "lower_bound_ppm",
+          "upper_bound_ppm",
+          "sample_size",
+          "method",
+          "resamples",
+          "familywise_confidence_ppm"
+        ],
+        "title": "CampaignMetricEstimate"
+      },
+      "CampaignRecommendationPolicy": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "default": "campaign-policy-v1"
+          },
+          "minimum_interval_trials": {
+            "type": "integer",
+            "minimum": 2.0,
+            "title": "Minimum Interval Trials",
+            "default": 5
+          },
+          "minimum_live_trials": {
+            "type": "integer",
+            "minimum": 2.0,
+            "title": "Minimum Live Trials",
+            "default": 10
+          },
+          "minimum_success_delta_ppm": {
+            "type": "integer",
+            "title": "Minimum Success Delta Ppm",
+            "default": 0
+          },
+          "minimum_quality_delta_ppm": {
+            "type": "integer",
+            "title": "Minimum Quality Delta Ppm",
+            "default": 10000
+          },
+          "maximum_cost_ratio_ppm": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Maximum Cost Ratio Ppm",
+            "default": 1500000
+          },
+          "maximum_duration_ratio_ppm": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Maximum Duration Ratio Ppm",
+            "default": 1500000
+          },
+          "familywise_confidence_ppm": {
+            "type": "integer",
+            "exclusiveMaximum": 1000000.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Familywise Confidence Ppm",
+            "default": 950000
+          },
+          "bootstrap_resamples": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 100.0,
+            "title": "Bootstrap Resamples",
+            "default": 10000
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CampaignRecommendationPolicy",
+        "description": "所有数值都是初始治理门槛，必须由真实 Live Campaign 调优。"
+      },
+      "CampaignScope": {
+        "properties": {
+          "task_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Pack"
+          },
+          "case_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Case Id"
+          },
+          "fixture_hash": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Fixture Hash"
+          },
+          "input_hash": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Input Hash"
+          },
+          "scorer_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Scorer Version"
+          },
+          "evidence_tier": {
+            "$ref": "#/components/schemas/EvidenceTier"
+          },
+          "model_profile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Model Profile"
+          },
+          "model_budget": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Model Budget"
+          },
+          "harness_profile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Harness Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_pack",
+          "case_id",
+          "fixture_hash",
+          "input_hash",
+          "scorer_version",
+          "evidence_tier",
+          "model_profile",
+          "model_budget",
+          "harness_profile"
+        ],
+        "title": "CampaignScope",
+        "description": "跨 Pair 聚合时必须保持不变的实验语义。"
+      },
+      "CampaignTrialPlan": {
+        "properties": {
+          "trial_index": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Trial Index"
+          },
+          "pair_request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Pair Request Id"
+          },
+          "eval_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Eval Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trial_index",
+          "pair_request_id",
+          "eval_id"
+        ],
+        "title": "CampaignTrialPlan"
+      },
+      "CampaignTrialSummary": {
+        "properties": {
+          "trial_index": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Trial Index"
+          },
+          "eval_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Eval Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "started",
+              "linked",
+              "released",
+              "observed",
+              "creation_failed"
+            ],
+            "title": "Status"
+          },
+          "evidence_valid": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Valid"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons",
+            "default": []
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PairedTrialSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trial_index",
+          "eval_id",
+          "status"
+        ],
+        "title": "CampaignTrialSummary"
       },
       "CancelResult": {
         "properties": {
@@ -910,6 +1590,344 @@
           "status"
         ],
         "title": "DreamJobView"
+      },
+      "EvalCampaignContract": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version",
+            "default": "eval-campaign-v1"
+          },
+          "aggregator_version": {
+            "type": "string",
+            "title": "Aggregator Version",
+            "default": "paired-bootstrap-v1"
+          },
+          "campaign_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Campaign Id"
+          },
+          "request_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Request Fingerprint"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "brief": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Brief"
+          },
+          "task_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Pack"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode"
+          },
+          "evidence_tier": {
+            "$ref": "#/components/schemas/EvidenceTier"
+          },
+          "planned_trial_count": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Planned Trial Count"
+          },
+          "trials": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignTrialPlan"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Trials"
+          },
+          "pair_model_budget": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Pair Model Budget"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/CampaignBudgetEnvelope"
+          },
+          "max_parallel_pairs": {
+            "type": "integer",
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Max Parallel Pairs",
+            "default": 1
+          },
+          "policy": {
+            "$ref": "#/components/schemas/CampaignRecommendationPolicy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "request_fingerprint",
+          "title",
+          "brief",
+          "task_pack",
+          "model_mode",
+          "evidence_tier",
+          "planned_trial_count",
+          "trials",
+          "pair_model_budget",
+          "budget"
+        ],
+        "title": "EvalCampaignContract",
+        "description": "任何子 Pair 执行前必须持久化的不可变实验计划。"
+      },
+      "EvalCampaignCreated": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "queued",
+            "title": "Status",
+            "default": "queued"
+          },
+          "planned_trial_count": {
+            "type": "integer",
+            "title": "Planned Trial Count"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/CampaignBudgetEnvelope"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "planned_trial_count",
+          "budget"
+        ],
+        "title": "EvalCampaignCreated"
+      },
+      "EvalCampaignReport": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Campaign Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/EvalCampaignContract"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Fingerprint"
+          },
+          "planned_trial_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Planned Trial Count"
+          },
+          "linked_trial_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Linked Trial Count"
+          },
+          "released_trial_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Released Trial Count"
+          },
+          "completed_trial_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completed Trial Count"
+          },
+          "invalid_trial_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Invalid Trial Count"
+          },
+          "trials": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignTrialSummary"
+            },
+            "type": "array",
+            "title": "Trials"
+          },
+          "evidence_valid": {
+            "type": "boolean",
+            "title": "Evidence Valid"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons",
+            "default": []
+          },
+          "aggregate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignAggregate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recommendation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamRecommendationDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "status",
+          "contract",
+          "planned_trial_count",
+          "linked_trial_count",
+          "released_trial_count",
+          "completed_trial_count",
+          "invalid_trial_count",
+          "trials",
+          "evidence_valid"
+        ],
+        "title": "EvalCampaignReport"
+      },
+      "EvalCampaignRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "brief": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Brief"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode",
+            "default": "scripted"
+          },
+          "task_pack": {
+            "type": "string",
+            "const": "repo-maintainer",
+            "title": "Task Pack",
+            "default": "repo-maintainer"
+          },
+          "trial_count": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Trial Count",
+            "default": 3
+          },
+          "max_parallel_pairs": {
+            "type": "integer",
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Max Parallel Pairs",
+            "default": 1
+          },
+          "model_budget": {
+            "$ref": "#/components/schemas/ModelBudgetConfig"
+          },
+          "campaign_max_total_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Campaign Max Total Tokens",
+            "default": 2500000
+          },
+          "campaign_max_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              }
+            ],
+            "title": "Campaign Max Cost Usd",
+            "default": "1.00"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "title",
+          "brief"
+        ],
+        "title": "EvalCampaignRequest"
       },
       "Event": {
         "properties": {
@@ -1741,6 +2759,13 @@
           "evidence_tier": {
             "$ref": "#/components/schemas/EvidenceTier"
           },
+          "harness_profile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Harness Profile"
+          },
           "single": {
             "$ref": "#/components/schemas/PairedEvalArm"
           },
@@ -1762,6 +2787,56 @@
         ],
         "title": "PairedEvalContract",
         "description": "Fail-closed proof that Single and Team are mechanically comparable."
+      },
+      "PairedEvalCreateRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "brief": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Brief"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode",
+            "default": "scripted"
+          },
+          "task_pack": {
+            "type": "string",
+            "const": "repo-maintainer",
+            "title": "Task Pack",
+            "default": "repo-maintainer"
+          },
+          "model_budget": {
+            "$ref": "#/components/schemas/ModelBudgetConfig"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "title",
+          "brief"
+        ],
+        "title": "PairedEvalCreateRequest",
+        "description": "公开 Pair DTO；父子 Link 与释放策略只由 Harness 内部持有。"
       },
       "PairedEvalCreated": {
         "properties": {
@@ -1851,54 +2926,111 @@
         ],
         "title": "PairedEvalReport"
       },
-      "PairedEvalRequest": {
+      "PairedTrialSample": {
         "properties": {
-          "request_id": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 8,
-            "pattern": "^[A-Za-z0-9._:-]+$",
-            "title": "Request Id"
+          "trial_index": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Trial Index"
           },
-          "title": {
+          "eval_id": {
             "type": "string",
-            "maxLength": 120,
             "minLength": 1,
-            "title": "Title"
+            "title": "Eval Id"
           },
-          "brief": {
+          "pair_report_sha256": {
             "type": "string",
-            "maxLength": 4000,
             "minLength": 1,
-            "title": "Brief"
+            "title": "Pair Report Sha256"
           },
-          "model_mode": {
+          "single_run_id": {
             "type": "string",
-            "enum": [
-              "scripted",
-              "deepseek"
-            ],
-            "title": "Model Mode",
-            "default": "scripted"
+            "minLength": 1,
+            "title": "Single Run Id"
           },
-          "task_pack": {
+          "team_run_id": {
             "type": "string",
-            "const": "repo-maintainer",
-            "title": "Task Pack",
-            "default": "repo-maintainer"
+            "minLength": 1,
+            "title": "Team Run Id"
           },
-          "model_budget": {
-            "$ref": "#/components/schemas/ModelBudgetConfig"
+          "single_terminal_event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Single Terminal Event Id"
+          },
+          "team_terminal_event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Team Terminal Event Id"
+          },
+          "single_success": {
+            "type": "boolean",
+            "title": "Single Success"
+          },
+          "team_success": {
+            "type": "boolean",
+            "title": "Team Success"
+          },
+          "single_quality_ppm": {
+            "type": "integer",
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Single Quality Ppm"
+          },
+          "team_quality_ppm": {
+            "type": "integer",
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Team Quality Ppm"
+          },
+          "single_committed_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Single Committed Cost Microusd"
+          },
+          "team_committed_cost_microusd": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Team Committed Cost Microusd"
+          },
+          "single_duration_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Single Duration Ms"
+          },
+          "team_duration_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Team Duration Ms"
+          },
+          "hard_reliability_regression": {
+            "type": "boolean",
+            "title": "Hard Reliability Regression",
+            "default": false
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "request_id",
-          "title",
-          "brief"
+          "trial_index",
+          "eval_id",
+          "pair_report_sha256",
+          "single_run_id",
+          "team_run_id",
+          "single_terminal_event_id",
+          "team_terminal_event_id",
+          "single_success",
+          "team_success",
+          "single_quality_ppm",
+          "team_quality_ppm",
+          "single_committed_cost_microusd",
+          "team_committed_cost_microusd",
+          "single_duration_ms",
+          "team_duration_ms"
         ],
-        "title": "PairedEvalRequest"
+        "title": "PairedTrialSample",
+        "description": "一个 Pair 的不可拆分统计样本，只接受已验证的机器事实。"
       },
       "PeerProbeRequest": {
         "properties": {

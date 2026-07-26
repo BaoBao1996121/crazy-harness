@@ -81,7 +81,16 @@ export async function submitPairedEval<T>(
     requestIds.rotate();
     return created;
   } catch (error) {
-    if (error instanceof ApiError && error.status === 409) requestIds.rotate();
+    if (
+      error instanceof ApiError
+      && (
+        error.status === 400
+        || error.status === 422
+        || (error.status === 409 && error.retryable !== true)
+      )
+    ) {
+      requestIds.rotate();
+    }
     throw error;
   }
 }

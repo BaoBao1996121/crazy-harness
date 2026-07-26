@@ -53,6 +53,7 @@ class PairedEvalContract(BaseModel):
     fixture_hash: str = Field(min_length=1)
     scorer_version: str = Field(min_length=1)
     evidence_tier: EvidenceTier
+    harness_profile: dict[str, JsonValue] = Field(default_factory=dict)
     single: PairedEvalArm
     team: PairedEvalArm
 

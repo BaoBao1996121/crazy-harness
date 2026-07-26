@@ -7,6 +7,7 @@ import pytest
 from crazy_harness.control_plane.paired_evals import (
     PairedEvalCreationRejected,
     PairedEvalRequest,
+    paired_eval_id,
 )
 from crazy_harness.control_plane.runtime import ResidentRuntime
 from crazy_harness.core.evals import RecommendationOutcome
@@ -53,7 +54,70 @@ def test_runtime_runs_a_fair_deterministic_single_vs_team_pair(tmp_path):
     assert replay == report
 
 
-def test_pair_scorer_fails_closed_when_one_terminal_workspace_is_tampered(tmp_path):
+def test_finalize_ready_reports_only_new_pair_completions(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    runtime.create_paired_eval(
+        PairedEvalRequest(
+            request_id="runtime-finalizer-progress-1",
+            title="Finalizer progress",
+            brief="Repair clamp without changing tests.",
+            model_mode="scripted",
+        )
+    )
+    runtime.run_until_idle(max_steps=300)
+
+    assert runtime.eval_service.finalize_ready() == 0
+    assert runtime.eval_service.finalize_ready() == 0
+
+
+def test_pair_finalizer_retries_one_transient_scorer_failure(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    delegate = runtime.eval_service.scorer
+
+    class FailOnceScorer:
+        scorer_version = delegate.scorer_version
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def score(self, prepared, *, expected_input_hash=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient scorer startup failure")
+            return delegate.score(
+                prepared,
+                expected_input_hash=expected_input_hash,
+            )
+
+    scorer = FailOnceScorer()
+    runtime.eval_service.scorer = scorer
+    created = runtime.create_paired_eval(
+        PairedEvalRequest(
+            request_id="runtime-finalizer-retry-1",
+            title="Retry a transient scorer failure",
+            brief="Repair clamp without changing tests.",
+            model_mode="scripted",
+        )
+    )
+
+    runtime.run_until_idle(max_steps=300)
+    report = runtime.paired_eval(created.eval_id)
+
+    assert report.status == "completed"
+    assert scorer.calls == 3
+    failures = [
+        event
+        for event in runtime.store.read_all(run_id=created.eval_id)
+        if event.type == "eval.pair.finalization.failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0].payload["automatic_retry"] is True
+
+
+def test_pair_scorer_fails_closed_when_one_terminal_workspace_is_tampered(
+    tmp_path,
+    monkeypatch,
+):
     runtime = ResidentRuntime(tmp_path)
     created = runtime.create_paired_eval(
         PairedEvalRequest(
@@ -63,7 +127,11 @@ def test_pair_scorer_fails_closed_when_one_terminal_workspace_is_tampered(tmp_pa
             model_mode="scripted",
         )
     )
-    runtime.run_until_idle(max_steps=300)
+    # Stop the resident Pair Finalizer while both arms reach terminal state so
+    # this test can tamper with the workspace before the first scoring pass.
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.eval_service, "finalize_ready", lambda: 0)
+        runtime.run_until_idle(max_steps=300)
     contract = runtime.eval_service.contract(created.eval_id)
     (contract.team.workspace / "tests" / "test_calculator.py").write_text(
         "import unittest\n", encoding="utf-8"
@@ -156,6 +224,69 @@ def test_runtime_recovers_committed_pair_before_releasing_same_arms(tmp_path):
     ) == 1
 
 
+def test_campaign_can_hold_pair_until_parent_link_is_persisted(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    created = runtime.create_paired_eval(
+        PairedEvalRequest(
+            request_id="runtime-held-pair-1",
+            title="Hold child pair",
+            brief="Do not execute before the parent campaign links this pair.",
+            model_mode="scripted",
+        ),
+        release_arms=False,
+    )
+
+    assert not any(
+        event.type == "mailbox.delivery.sent"
+        and event.run_id in {created.single_run_id, created.team_run_id}
+        for event in runtime.store.read_all()
+    )
+    runtime.release_paired_eval(created.eval_id)
+    runtime.release_paired_eval(created.eval_id)
+
+    deliveries = [
+        event
+        for event in runtime.store.read_all()
+        if event.type == "mailbox.delivery.sent"
+        and event.run_id in {created.single_run_id, created.team_run_id}
+    ]
+    assert len(deliveries) == 2
+
+
+def test_held_pair_cannot_release_before_commit_fact(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    request = PairedEvalRequest(
+        request_id="runtime-uncommitted-held-pair-1",
+        title="Do not release an uncommitted Pair",
+        brief="Crash after Pair creation but before its commit fact.",
+        model_mode="scripted",
+    )
+
+    def crash_after_created(point: str) -> None:
+        if point == "after_eval_pair_created":
+            raise KeyboardInterrupt("simulated pre-commit process crash")
+
+    runtime.eval_service.fault_injector = crash_after_created
+    with pytest.raises(KeyboardInterrupt, match="pre-commit"):
+        runtime.create_paired_eval(request, release_arms=False)
+
+    eval_id = paired_eval_id(request.request_id)
+    assert any(
+        event.type == "eval.pair.created"
+        for event in runtime.store.read_all(run_id=eval_id)
+    )
+    assert not any(
+        event.type == "eval.pair.committed"
+        for event in runtime.store.read_all(run_id=eval_id)
+    )
+    with pytest.raises(RuntimeError, match="not committed"):
+        runtime.release_paired_eval(eval_id)
+    assert not any(
+        event.type == "mailbox.delivery.sent"
+        for event in runtime.store.read_all()
+    )
+
+
 def test_concurrent_create_cannot_persist_both_failed_and_committed(tmp_path):
     first = ResidentRuntime(tmp_path)
     competing = ResidentRuntime(tmp_path)
@@ -203,7 +334,56 @@ def test_concurrent_create_cannot_persist_both_failed_and_committed(tmp_path):
     assert not any(event.type == "eval.pair.committed" for event in eval_events)
 
 
-def test_concurrent_finalizers_execute_one_machine_scoring_pass(tmp_path):
+def test_long_pair_prepare_renews_its_creation_claim(tmp_path, monkeypatch):
+    first = ResidentRuntime(tmp_path)
+    competing = ResidentRuntime(tmp_path)
+    request = PairedEvalRequest(
+        request_id="runtime-renew-long-create-1",
+        title="Renew a long Pair creation",
+        brief="Only one creator may execute Prepare side effects.",
+    )
+    first.eval_service._CREATE_CLAIM_TTL_SECONDS = 1
+    competing.eval_service._CREATE_CLAIM_TTL_SECONDS = 1
+    first.eval_service._CREATE_CLAIM_WAIT_SECONDS = 5.0
+    competing.eval_service._CREATE_CLAIM_WAIT_SECONDS = 5.0
+    entered = threading.Event()
+    release = threading.Event()
+    competing_prepare_calls: list[str] = []
+    first_prepare = first._prepare_single_task
+    competing_prepare = competing._prepare_single_task
+
+    def block_first(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10)
+        return first_prepare(*args, **kwargs)
+
+    def count_competing(*args, **kwargs):
+        competing_prepare_calls.append("single")
+        return competing_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(first, "_prepare_single_task", block_first)
+    monkeypatch.setattr(competing, "_prepare_single_task", count_competing)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(first.create_paired_eval, request)
+        assert entered.wait(timeout=10)
+        time.sleep(1.2)
+        observer = pool.submit(competing.create_paired_eval, request)
+        time.sleep(1.2)
+        overlap = list(competing_prepare_calls)
+        release.set()
+        created = winner.result(timeout=20)
+        replay = observer.result(timeout=20)
+
+    assert overlap == []
+    assert competing_prepare_calls == []
+    assert replay == created
+
+
+def test_concurrent_finalizers_execute_one_machine_scoring_pass(
+    tmp_path,
+    monkeypatch,
+):
     class BlockingCountingScorer(RepoMaintainerScorer):
         def __init__(self) -> None:
             self.calls = 0
@@ -229,7 +409,10 @@ def test_concurrent_finalizers_execute_one_machine_scoring_pass(tmp_path):
             model_mode="scripted",
         )
     )
-    runtime.run_until_idle(max_steps=300)
+    # Keep the Pair pending until the two explicit finalizers race below.
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.eval_service, "finalize_ready", lambda: 0)
+        runtime.run_until_idle(max_steps=300)
     scorer = BlockingCountingScorer()
     runtime.eval_service.scorer = scorer
 

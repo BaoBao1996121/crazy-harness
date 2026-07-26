@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type EventRecord, type FaultPoint, type Snapshot, type TaskRequest } from "../api/client";
+import { hasPendingEvalCampaign } from "../lib/campaignRequests";
 import { createAsyncThrottle } from "../lib/throttle";
-import { mergeSearchParam } from "../lib/urlState";
+import {
+  hasExplicitIdentity,
+  mergeSearchParam,
+  resolveIdentityParam,
+} from "../lib/urlState";
 
 type StreamState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -12,14 +17,27 @@ interface StreamFrame {
   event: EventRecord["event"];
 }
 
-export function resolveInitialRunId(search: string, storedRun: string | null): string | undefined {
-  const requestedRun = new URLSearchParams(search).get("run")?.trim();
-  return requestedRun || storedRun?.trim() || undefined;
+export function resolveInitialRunId(
+  search: string,
+  storedRun: string | null,
+  hasPendingCampaign = false,
+): string | undefined {
+  if (hasPendingCampaign) return undefined;
+  return resolveIdentityParam(search, "run", storedRun);
+}
+
+export function shouldDiscoverLatestRun(
+  search: string,
+  runId: string | undefined,
+  hasPendingCampaign = false,
+): boolean {
+  return !runId && !hasPendingCampaign && !hasExplicitIdentity(search);
 }
 
 const rememberedRun = () => resolveInitialRunId(
   window.location.search,
   window.localStorage.getItem("crazy.activeRun"),
+  hasPendingEvalCampaign(window.localStorage),
 );
 
 function replaceRunInLocation(runId: string | undefined): void {
@@ -70,7 +88,17 @@ export function useControlPlane() {
 
   useEffect(() => {
     if (!runId) {
-      void refreshSnapshot(undefined);
+      if (shouldDiscoverLatestRun(
+        window.location.search,
+        runId,
+        hasPendingEvalCampaign(window.localStorage),
+      )) {
+        void refreshSnapshot(undefined);
+      } else {
+        setSnapshot(null);
+        setEvents([]);
+        setSelectedId(null);
+      }
       setStreamState("offline");
       return;
     }

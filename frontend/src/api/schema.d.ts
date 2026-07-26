@@ -90,6 +90,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/evals/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Eval Campaigns */
+        get: operations["list_eval_campaigns_api_evals_campaigns_get"];
+        put?: never;
+        /** Create Eval Campaign */
+        post: operations["create_eval_campaign_api_evals_campaigns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/evals/campaigns/{campaign_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Eval Campaign */
+        get: operations["get_eval_campaign_api_evals_campaigns__campaign_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/evals/campaigns/{campaign_id}/drain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drain Eval Campaign */
+        post: operations["drain_eval_campaign_api_evals_campaigns__campaign_id__drain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/evals/campaigns/{campaign_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Eval Campaign */
+        post: operations["cancel_eval_campaign_api_evals_campaigns__campaign_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/drain": {
         parameters: {
             query?: never;
@@ -266,6 +335,22 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ApiErrorDetail */
+        ApiErrorDetail: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+        };
+        /** ApiErrorResponse */
+        ApiErrorResponse: {
+            detail: components["schemas"]["ApiErrorDetail"];
+        };
         /** AssignmentView */
         AssignmentView: {
             /** Assignment Id */
@@ -284,6 +369,178 @@ export interface components {
             status: string;
         } & {
             [key: string]: unknown;
+        };
+        /** CampaignAggregate */
+        CampaignAggregate: {
+            /** Aggregator Version */
+            aggregator_version: string;
+            /** Sample Count */
+            sample_count: number;
+            /** Samples Sha256 */
+            samples_sha256: string;
+            /** Bootstrap Seed Sha256 */
+            bootstrap_seed_sha256: string;
+            /** Hard Reliability Regression */
+            hard_reliability_regression: boolean;
+            success_rate_delta: components["schemas"]["CampaignMetricEstimate"];
+            quality_delta: components["schemas"]["CampaignMetricEstimate"];
+            cost_ratio: components["schemas"]["CampaignMetricEstimate"];
+            duration_ratio: components["schemas"]["CampaignMetricEstimate"];
+        };
+        /**
+         * CampaignBudgetEnvelope
+         * @description 父实验对全部 Single/Team Run 的静态最坏预算证明。
+         */
+        CampaignBudgetEnvelope: {
+            /** Trial Count */
+            trial_count: number;
+            /** Per Arm Max Tokens */
+            per_arm_max_tokens: number;
+            /** Per Arm Max Cost Usd */
+            per_arm_max_cost_usd: string;
+            /** Max Total Tokens */
+            max_total_tokens: number;
+            /** Max Total Cost Usd */
+            max_total_cost_usd: string;
+        };
+        /** CampaignMetricEstimate */
+        CampaignMetricEstimate: {
+            /**
+             * Metric
+             * @enum {string}
+             */
+            metric: "success_rate_delta" | "quality_delta" | "cost_ratio" | "duration_ratio";
+            /** Point Ppm */
+            point_ppm: number | null;
+            /** Lower Bound Ppm */
+            lower_bound_ppm: number | null;
+            /** Upper Bound Ppm */
+            upper_bound_ppm: number | null;
+            /** Sample Size */
+            sample_size: number;
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "point_only" | "deterministic_paired_percentile";
+            /** Resamples */
+            resamples: number;
+            /** Familywise Confidence Ppm */
+            familywise_confidence_ppm: number;
+            /**
+             * Unbounded
+             * @default false
+             */
+            unbounded: boolean;
+        };
+        /**
+         * CampaignRecommendationPolicy
+         * @description 所有数值都是初始治理门槛，必须由真实 Live Campaign 调优。
+         */
+        CampaignRecommendationPolicy: {
+            /**
+             * Version
+             * @default campaign-policy-v1
+             */
+            version: string;
+            /**
+             * Minimum Interval Trials
+             * @default 5
+             */
+            minimum_interval_trials: number;
+            /**
+             * Minimum Live Trials
+             * @default 10
+             */
+            minimum_live_trials: number;
+            /**
+             * Minimum Success Delta Ppm
+             * @default 0
+             */
+            minimum_success_delta_ppm: number;
+            /**
+             * Minimum Quality Delta Ppm
+             * @default 10000
+             */
+            minimum_quality_delta_ppm: number;
+            /**
+             * Maximum Cost Ratio Ppm
+             * @default 1500000
+             */
+            maximum_cost_ratio_ppm: number;
+            /**
+             * Maximum Duration Ratio Ppm
+             * @default 1500000
+             */
+            maximum_duration_ratio_ppm: number;
+            /**
+             * Familywise Confidence Ppm
+             * @default 950000
+             */
+            familywise_confidence_ppm: number;
+            /**
+             * Bootstrap Resamples
+             * @default 10000
+             */
+            bootstrap_resamples: number;
+        };
+        /**
+         * CampaignScope
+         * @description 跨 Pair 聚合时必须保持不变的实验语义。
+         */
+        CampaignScope: {
+            /** Task Pack */
+            task_pack: string;
+            /** Case Id */
+            case_id: string;
+            /** Fixture Hash */
+            fixture_hash: string;
+            /** Input Hash */
+            input_hash: string;
+            /** Scorer Version */
+            scorer_version: string;
+            evidence_tier: components["schemas"]["EvidenceTier"];
+            /** Model Profile */
+            model_profile: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Model Budget */
+            model_budget: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Harness Profile */
+            harness_profile: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+        };
+        /** CampaignTrialPlan */
+        CampaignTrialPlan: {
+            /** Trial Index */
+            trial_index: number;
+            /** Pair Request Id */
+            pair_request_id: string;
+            /** Eval Id */
+            eval_id: string;
+        };
+        /** CampaignTrialSummary */
+        CampaignTrialSummary: {
+            /** Trial Index */
+            trial_index: number;
+            /** Eval Id */
+            eval_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "started" | "linked" | "released" | "observed" | "creation_failed";
+            /** Evidence Valid */
+            evidence_valid?: boolean | null;
+            /**
+             * Invalid Reasons
+             * @default []
+             */
+            invalid_reasons: string[];
+            sample?: components["schemas"]["PairedTrialSample"] | null;
         };
         /** CancelResult */
         CancelResult: {
@@ -387,6 +644,144 @@ export interface components {
             memory_candidate_id?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * EvalCampaignContract
+         * @description 任何子 Pair 执行前必须持久化的不可变实验计划。
+         */
+        EvalCampaignContract: {
+            /**
+             * Schema Version
+             * @default eval-campaign-v1
+             */
+            schema_version: string;
+            /**
+             * Aggregator Version
+             * @default paired-bootstrap-v1
+             */
+            aggregator_version: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Request Fingerprint */
+            request_fingerprint: string;
+            /** Title */
+            title: string;
+            /** Brief */
+            brief: string;
+            /** Task Pack */
+            task_pack: string;
+            /**
+             * Model Mode
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            evidence_tier: components["schemas"]["EvidenceTier"];
+            /** Planned Trial Count */
+            planned_trial_count: number;
+            /** Trials */
+            trials: components["schemas"]["CampaignTrialPlan"][];
+            /** Pair Model Budget */
+            pair_model_budget: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            budget: components["schemas"]["CampaignBudgetEnvelope"];
+            /**
+             * Max Parallel Pairs
+             * @default 1
+             */
+            max_parallel_pairs: number;
+            policy?: components["schemas"]["CampaignRecommendationPolicy"];
+        };
+        /** EvalCampaignCreated */
+        EvalCampaignCreated: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+            /** Planned Trial Count */
+            planned_trial_count: number;
+            budget: components["schemas"]["CampaignBudgetEnvelope"];
+        };
+        /** EvalCampaignReport */
+        EvalCampaignReport: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "completed" | "cancelled";
+            contract: components["schemas"]["EvalCampaignContract"];
+            scope?: components["schemas"]["CampaignScope"] | null;
+            /** Scope Fingerprint */
+            scope_fingerprint?: string | null;
+            /** Planned Trial Count */
+            planned_trial_count: number;
+            /** Linked Trial Count */
+            linked_trial_count: number;
+            /** Released Trial Count */
+            released_trial_count: number;
+            /** Completed Trial Count */
+            completed_trial_count: number;
+            /** Invalid Trial Count */
+            invalid_trial_count: number;
+            /** Trials */
+            trials: components["schemas"]["CampaignTrialSummary"][];
+            /** Evidence Valid */
+            evidence_valid: boolean;
+            /**
+             * Invalid Reasons
+             * @default []
+             */
+            invalid_reasons: string[];
+            aggregate?: components["schemas"]["CampaignAggregate"] | null;
+            recommendation?: components["schemas"]["TeamRecommendationDecision"] | null;
+        };
+        /** EvalCampaignRequest */
+        EvalCampaignRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Title */
+            title: string;
+            /** Brief */
+            brief: string;
+            /**
+             * Model Mode
+             * @default scripted
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            /**
+             * Task Pack
+             * @default repo-maintainer
+             * @constant
+             */
+            task_pack: "repo-maintainer";
+            /**
+             * Trial Count
+             * @default 3
+             */
+            trial_count: number;
+            /**
+             * Max Parallel Pairs
+             * @default 1
+             */
+            max_parallel_pairs: number;
+            model_budget?: components["schemas"]["ModelBudgetConfig"];
+            /**
+             * Campaign Max Total Tokens
+             * @default 2500000
+             */
+            campaign_max_total_tokens: number;
+            /**
+             * Campaign Max Cost Usd
+             * @default 1.00
+             */
+            campaign_max_cost_usd: number | string;
         };
         /**
          * Event
@@ -712,8 +1107,37 @@ export interface components {
             /** Scorer Version */
             scorer_version: string;
             evidence_tier: components["schemas"]["EvidenceTier"];
+            /** Harness Profile */
+            harness_profile?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
             single: components["schemas"]["PairedEvalArm"];
             team: components["schemas"]["PairedEvalArm"];
+        };
+        /**
+         * PairedEvalCreateRequest
+         * @description 公开 Pair DTO；父子 Link 与释放策略只由 Harness 内部持有。
+         */
+        PairedEvalCreateRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Title */
+            title: string;
+            /** Brief */
+            brief: string;
+            /**
+             * Model Mode
+             * @default scripted
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            /**
+             * Task Pack
+             * @default repo-maintainer
+             * @constant
+             */
+            task_pack: "repo-maintainer";
+            model_budget?: components["schemas"]["ModelBudgetConfig"];
         };
         /** PairedEvalCreated */
         PairedEvalCreated: {
@@ -754,27 +1178,46 @@ export interface components {
             invalid_reasons: string[];
             recommendation?: components["schemas"]["TeamRecommendationDecision"] | null;
         };
-        /** PairedEvalRequest */
-        PairedEvalRequest: {
-            /** Request Id */
-            request_id: string;
-            /** Title */
-            title: string;
-            /** Brief */
-            brief: string;
+        /**
+         * PairedTrialSample
+         * @description 一个 Pair 的不可拆分统计样本，只接受已验证的机器事实。
+         */
+        PairedTrialSample: {
+            /** Trial Index */
+            trial_index: number;
+            /** Eval Id */
+            eval_id: string;
+            /** Pair Report Sha256 */
+            pair_report_sha256: string;
+            /** Single Run Id */
+            single_run_id: string;
+            /** Team Run Id */
+            team_run_id: string;
+            /** Single Terminal Event Id */
+            single_terminal_event_id: string;
+            /** Team Terminal Event Id */
+            team_terminal_event_id: string;
+            /** Single Success */
+            single_success: boolean;
+            /** Team Success */
+            team_success: boolean;
+            /** Single Quality Ppm */
+            single_quality_ppm: number;
+            /** Team Quality Ppm */
+            team_quality_ppm: number;
+            /** Single Committed Cost Microusd */
+            single_committed_cost_microusd: number;
+            /** Team Committed Cost Microusd */
+            team_committed_cost_microusd: number;
+            /** Single Duration Ms */
+            single_duration_ms: number;
+            /** Team Duration Ms */
+            team_duration_ms: number;
             /**
-             * Model Mode
-             * @default scripted
-             * @enum {string}
+             * Hard Reliability Regression
+             * @default false
              */
-            model_mode: "scripted" | "deepseek";
-            /**
-             * Task Pack
-             * @default repo-maintainer
-             * @constant
-             */
-            task_pack: "repo-maintainer";
-            model_budget?: components["schemas"]["ModelBudgetConfig"];
+            hard_reliability_regression: boolean;
         };
         /** PeerProbeRequest */
         PeerProbeRequest: {
@@ -1149,7 +1592,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PairedEvalRequest"];
+                "application/json": components["schemas"]["PairedEvalCreateRequest"];
             };
         };
         responses: {
@@ -1222,6 +1665,206 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PairedEvalReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_eval_campaigns_api_evals_campaigns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCampaignReport"][];
+                };
+            };
+        };
+    };
+    create_eval_campaign_api_evals_campaigns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalCampaignRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCampaignCreated"];
+                };
+            };
+            /** @description Invalid campaign */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Campaign conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_eval_campaign_api_evals_campaigns__campaign_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCampaignReport"];
+                };
+            };
+            /** @description Campaign not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    drain_eval_campaign_api_evals_campaigns__campaign_id__drain_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCampaignReport"];
+                };
+            };
+            /** @description Campaign not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_eval_campaign_api_evals_campaigns__campaign_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCampaignReport"];
+                };
+            };
+            /** @description Campaign not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Cancellation conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
             /** @description Validation Error */

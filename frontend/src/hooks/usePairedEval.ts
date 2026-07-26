@@ -7,13 +7,22 @@ import {
   type PairedEvalReport,
 } from "../api/client";
 import { createEvalRequestIds, submitPairedEval } from "../lib/evalRequests";
-import { mergeSearchParam, restoreSearchParam } from "../lib/urlState";
+import { hasPendingEvalCampaign } from "../lib/campaignRequests";
+import {
+  mergeSearchParam,
+  resolveIdentityParam,
+  restoreSearchParam,
+} from "../lib/urlState";
 
 const EVAL_STORAGE_KEY = "crazy.activeEval";
 
-export function resolveInitialEvalId(search: string, storedEval: string | null): string | undefined {
-  const requestedEval = new URLSearchParams(search).get("eval")?.trim();
-  return requestedEval || storedEval?.trim() || undefined;
+export function resolveInitialEvalId(
+  search: string,
+  storedEval: string | null,
+  hasPendingCampaign = false,
+): string | undefined {
+  if (hasPendingCampaign) return undefined;
+  return resolveIdentityParam(search, "eval", storedEval);
 }
 
 export function nextPollDelay(report: PairedEvalReport): number | undefined {
@@ -35,6 +44,7 @@ export function evalErrorMessage(error: unknown): string {
 }
 
 function rememberedEval(): string | undefined {
+  if (hasPendingEvalCampaign(window.localStorage)) return undefined;
   return restoreSearchParam(
     window.location.search,
     "eval",
@@ -145,6 +155,16 @@ export function usePairedEval({ activeRunId, onSelectRun }: UsePairedEvalOptions
     }
   }, [onSelectRun, requestIds]);
 
+  const openEval = useCallback((nextEvalId: string) => {
+    initializedEval.current = null;
+    setEvalId(nextEvalId);
+    setReport(null);
+    setSelectedArm("single");
+    setLoading(true);
+    window.localStorage.setItem(EVAL_STORAGE_KEY, nextEvalId);
+    replaceBrowserParam("eval", nextEvalId);
+  }, []);
+
   const selectArm = useCallback((arm: EvalArm) => {
     if (!report) return;
     setSelectedArm(arm);
@@ -160,6 +180,7 @@ export function usePairedEval({ activeRunId, onSelectRun }: UsePairedEvalOptions
     notice,
     setNotice,
     createEval,
+    openEval,
     selectArm,
     clearEval: forgetEval,
   };

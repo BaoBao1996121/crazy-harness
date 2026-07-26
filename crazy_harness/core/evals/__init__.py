@@ -1,3 +1,15 @@
+from crazy_harness.core.evals.campaign import (
+    CampaignAggregate,
+    CampaignAggregator,
+    CampaignBudgetEnvelope,
+    CampaignMetricEstimate,
+    CampaignRecommendationPolicy,
+    CampaignRecommendationEvidence,
+    CampaignScope,
+    CampaignTrialPlan,
+    EvalCampaignContract,
+    PairedTrialSample,
+)
 from crazy_harness.core.evals.evolution import EvolutionCandidate, EvolutionController, TypedDiff
 from crazy_harness.core.evals.models import EvalReport, EvalScenario, MetricThreshold
 from crazy_harness.core.evals.paired import (
@@ -14,15 +26,25 @@ from crazy_harness.core.evals.paired import (
 from crazy_harness.core.evals.runner import EvalRunner
 
 __all__ = [
+    "CampaignAggregate",
+    "CampaignAggregator",
+    "CampaignBudgetEnvelope",
+    "CampaignMetricEstimate",
+    "CampaignRecommendationPolicy",
+    "CampaignRecommendationEvidence",
+    "CampaignScope",
+    "CampaignTrialPlan",
     "EvidenceTier",
     "EvalReport",
     "EvalRunner",
     "EvalScenario",
+    "EvalCampaignContract",
     "EvolutionCandidate",
     "EvolutionController",
     "MetricThreshold",
     "PairedEvalArm",
     "PairedEvalContract",
+    "PairedTrialSample",
     "RecommendationOutcome",
     "RunTraceAggregator",
     "RunTraceMetrics",

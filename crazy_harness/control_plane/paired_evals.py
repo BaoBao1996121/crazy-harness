@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
 import json
+import sqlite3
+import threading
 from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
@@ -50,6 +53,19 @@ class PairedEvalRequest(BaseModel):
     model_mode: Literal["scripted", "deepseek"] = "scripted"
     task_pack: Literal["repo-maintainer"] = "repo-maintainer"
     model_budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
+    release_policy: Literal["immediate", "manual", "campaign_linked"] = "immediate"
+    parent_campaign_id: str | None = None
+    parent_trial_index: int | None = Field(default=None, ge=1, le=30)
+
+    @model_validator(mode="after")
+    def parent_identity_matches_release_policy(self) -> PairedEvalRequest:
+        has_parent = self.parent_campaign_id is not None or self.parent_trial_index is not None
+        if self.release_policy == "campaign_linked":
+            if self.parent_campaign_id is None or self.parent_trial_index is None:
+                raise ValueError("campaign-linked pair requires its parent trial identity")
+        elif has_parent:
+            raise ValueError("only campaign-linked pairs may declare a parent trial")
+        return self
 
 
 class EvalRunIdentity(BaseModel):
@@ -109,6 +125,96 @@ FaultInjector = Callable[[str], None]
 ResumeEval = Callable[[PairedEvalRequest], object]
 
 
+def is_retryable_pair_creation_error(exc: Exception) -> bool:
+    """Classify only operationally temporary Pair creation failures."""
+
+    if isinstance(
+        exc,
+        (TimeoutError, ConnectionError, BlockingIOError, InterruptedError),
+    ):
+        return True
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).casefold()
+        return any(
+            marker in message
+            for marker in (
+                "database is locked",
+                "database table is locked",
+                "database is busy",
+                "temporarily unavailable",
+            )
+        )
+    if isinstance(exc, OSError):
+        return exc.errno in {
+            errno.EAGAIN,
+            errno.EBUSY,
+            errno.EINTR,
+            errno.ETIMEDOUT,
+            errno.ECONNABORTED,
+            errno.ECONNREFUSED,
+            errno.ECONNRESET,
+        }
+    return False
+
+
+class _CreateClaimHeartbeat:
+    """Keep a Pair creation fence alive while synchronous Prepare is running."""
+
+    def __init__(
+        self,
+        store: SQLiteEventStore,
+        *,
+        claims: dict[str, int],
+        owner_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        self.store = store
+        self.claims = claims
+        self.owner_id = owner_id
+        self.ttl_seconds = ttl_seconds
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._reason = "paired eval creation claim was lost during Prepare"
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"pair-create-renewer-{owner_id[-8:]}",
+            daemon=False,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self.ttl_seconds / 3 + 0.5))
+        if self._thread.is_alive():
+            raise RuntimeError("paired eval creation claim renewer did not stop")
+
+    def ensure_current(self) -> None:
+        if self._lost.is_set():
+            raise TimeoutError(self._reason)
+
+    def _run(self) -> None:
+        interval = max(0.05, self.ttl_seconds / 3)
+        while not self._stop.wait(interval):
+            try:
+                renewed = self.store.renew_work_claims(
+                    claims=self.claims,
+                    owner_id=self.owner_id,
+                    ttl_seconds=self.ttl_seconds,
+                )
+            except Exception as exc:
+                self._reason = (
+                    "paired eval creation claim renewal failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                self._lost.set()
+                return
+            if not renewed:
+                self._lost.set()
+                return
+
+
 def paired_input_hash(request: PairedEvalRequest, fixture_hash: str) -> str:
     payload = {
         "task_pack": request.task_pack,
@@ -123,6 +229,11 @@ def paired_input_hash(request: PairedEvalRequest, fixture_hash: str) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def paired_eval_id(request_id: str) -> str:
+    value = uuid5(NAMESPACE_URL, f"crazy:eval-request:{request_id}")
+    return f"eval_{value.hex[:12]}"
 
 
 class PairedEvalService:
@@ -155,14 +266,30 @@ class PairedEvalService:
         release_arm: ReleaseArm,
         cancel_arm: CancelArm | None = None,
         fail_precommit: bool = True,
+        release_arms: bool | None = None,
     ) -> PairedEvalCreated:
+        should_release = (
+            request.release_policy == "immediate"
+            if release_arms is None
+            else release_arms
+        )
+        if should_release and request.release_policy == "campaign_linked":
+            raise ValueError("campaign-linked pair must be released after its parent link")
         eval_id = self._eval_id(request.request_id)
         claim_owner, claims = self._acquire_create_claim(eval_id)
+        heartbeat = _CreateClaimHeartbeat(
+            self.store,
+            claims=claims,
+            owner_id=claim_owner,
+            ttl_seconds=self._CREATE_CLAIM_TTL_SECONDS,
+        )
+        heartbeat.start()
         claim_closed = False
         identities: dict[str, EvalRunIdentity] = {}
         committed = False
         requested: Event | None = None
         try:
+            heartbeat.ensure_current()
             requested = self._request_event(eval_id, request)
             if self._events(eval_id, "eval.pair.failed"):
                 claim_closed = self.store.finish_work_claims(
@@ -191,7 +318,8 @@ class PairedEvalService:
                 )
                 claim_closed = True
                 committed = True
-                self._release_contract(contract, release_arm=release_arm)
+                if should_release:
+                    self._release_contract(contract, release_arm=release_arm)
                 return self._created(contract)
 
             for mode in ("single", "team"):
@@ -209,7 +337,9 @@ class PairedEvalService:
                 )
                 prepared = self._arm_events(eval_id, "eval.arm.created", mode)
                 if not prepared:
+                    heartbeat.ensure_current()
                     actual = prepare_arm(mode, identity)
+                    heartbeat.ensure_current()
                     if actual != identity:
                         raise ValueError(
                             f"paired {mode} prepare returned a different identity"
@@ -219,6 +349,7 @@ class PairedEvalService:
 
             single = identities["single"]
             team = identities["team"]
+            heartbeat.ensure_current()
             contract = self._build_contract(
                 eval_id=eval_id,
                 request=request,
@@ -232,6 +363,8 @@ class PairedEvalService:
                 {"contract": contract.model_dump(mode="json")},
                 causation_id=requested.id,
             )
+            self.fault_injector("after_eval_pair_created")
+            heartbeat.ensure_current()
             self._commit_contract(
                 contract,
                 claim_owner=claim_owner,
@@ -240,14 +373,19 @@ class PairedEvalService:
             claim_closed = True
             committed = True
             self.fault_injector("after_eval_pair_committed")
-            self._release_contract(contract, release_arm=release_arm)
+            if should_release:
+                self._release_contract(contract, release_arm=release_arm)
             return self._created(contract)
         except PairedEvalCreationRejected:
             raise
         except Exception as exc:
             if requested is None:
                 raise
-            if not committed and fail_precommit:
+            if (
+                not committed
+                and fail_precommit
+                and not is_retryable_pair_creation_error(exc)
+            ):
                 failure = self._event(
                     eval_id,
                     "failed",
@@ -284,12 +422,23 @@ class PairedEvalService:
                 raise PairedEvalCreationRejected(str(exc)) from exc
             raise
         finally:
+            heartbeat.stop()
             if not claim_closed:
                 self.store.finish_work_claims(
                     claims=claims,
                     owner_id=claim_owner,
                     state="released",
                 )
+
+    def prepared_run_ids(self, eval_id: str) -> tuple[str, ...]:
+        """Return deterministic child Runs that exist before a Pair Contract does."""
+
+        run_ids = []
+        for mode in ("single", "team"):
+            run_id = self._arm_identity(eval_id, mode).run_id
+            if self.store.projection("run", run_id) is not None:
+                run_ids.append(run_id)
+        return tuple(run_ids)
 
     def recover_pending(
         self,
@@ -346,6 +495,35 @@ class PairedEvalService:
             raise KeyError(f"paired eval has no unique contract: {eval_id}")
         return PairedEvalContract.model_validate(created[0].payload["contract"])
 
+    def release(self, eval_id: str, *, release_arm: ReleaseArm) -> PairedEvalCreated:
+        """在父级授权事实存在后幂等释放一个已 Commit 的 Pair。"""
+
+        contract = self.contract(eval_id)
+        committed = self._events(eval_id, "eval.pair.committed")
+        if len(committed) != 1:
+            raise RuntimeError("paired eval is not committed and cannot be released")
+        if committed[0].payload != {
+            "single_run_id": contract.single.run_id,
+            "team_run_id": contract.team.run_id,
+        }:
+            raise RuntimeError("paired eval commit fact does not match its contract")
+        requested = self._events(eval_id, "eval.pair.requested")
+        if len(requested) != 1:
+            raise RuntimeError(f"paired eval has no unique request: {eval_id}")
+        request = PairedEvalRequest.model_validate(requested[0].payload["request"])
+        if request.release_policy == "campaign_linked":
+            parent_events = self.store.read_all(run_id=str(request.parent_campaign_id))
+            linked = any(
+                event.type == "eval.campaign.trial.linked"
+                and event.payload.get("trial_index") == request.parent_trial_index
+                and event.payload.get("eval_id") == eval_id
+                for event in parent_events
+            )
+            if not linked:
+                raise RuntimeError("campaign-linked pair has no persisted parent link")
+        self._release_contract(contract, release_arm=release_arm)
+        return self._created(contract)
+
     def report(self, eval_id: str) -> PairedEvalReport:
         persisted = self._events(eval_id, "eval.pair.completed")
         if len(persisted) > 1:
@@ -377,10 +555,6 @@ class PairedEvalService:
         if current.status == "completed":
             return current
         contract = current.contract
-        if self.scorer.scorer_version != contract.scorer_version:
-            raise RuntimeError(
-                "paired eval scorer version does not match its persisted contract"
-            )
         if (
             current.single.status not in self._TERMINAL
             or current.team.status not in self._TERMINAL
@@ -397,17 +571,25 @@ class PairedEvalService:
         if claims is None:
             return self.report(eval_id)
         try:
-            single = self._completed_arm_report(
-                contract,
-                contract.single,
-                current.single.status,
-            )
-            team = self._completed_arm_report(
-                contract,
-                contract.team,
-                current.team.status,
-            )
-            invalid_reasons = self._live_model_attestation_errors(contract)
+            if self.scorer.scorer_version != contract.scorer_version:
+                single = current.single
+                team = current.team
+                invalid_reasons = (
+                    f"active scorer {self.scorer.scorer_version} does not match "
+                    f"persisted scorer {contract.scorer_version}",
+                )
+            else:
+                single = self._completed_arm_report(
+                    contract,
+                    contract.single,
+                    current.single.status,
+                )
+                team = self._completed_arm_report(
+                    contract,
+                    contract.team,
+                    current.team.status,
+                )
+                invalid_reasons = self._live_model_attestation_errors(contract)
             completed = PairedEvalReport(
                 eval_id=eval_id,
                 status="completed",
@@ -460,40 +642,48 @@ class PairedEvalService:
     def finalize_ready(self) -> int:
         """Finalize terminal pairs without making GET/list endpoints mutate state."""
 
-        completed = 0
+        progressed = 0
         eval_ids = {
             event.run_id
             for event in self.store.read_all()
             if event.type == "eval.pair.created"
         }
         for eval_id in sorted(eval_ids):
-            prior_failure = any(
-                event.payload.get("active_scorer_version")
-                == self.scorer.scorer_version
+            # `completed` 表示本轮新提交的事实，不能把历史终态反复当成进展，
+            # 否则常驻 Runtime 会持续 continue 并饿死 Mailbox 与 Lease 扫描。
+            if self.report(eval_id).status == "completed":
+                continue
+            prior_failures = [
+                event
                 for event in self._events(
                     eval_id,
                     "eval.pair.finalization.failed",
                 )
-            )
-            if prior_failure:
+                if event.payload.get("active_scorer_version")
+                == self.scorer.scorer_version
+            ]
+            if len(prior_failures) >= 3:
                 continue
             try:
                 finalized = self.finalize(eval_id)
             except Exception as exc:
+                attempt = len(prior_failures) + 1
                 self._append(
                     eval_id,
-                    f"finalization-failed:{self.scorer.scorer_version}",
+                    f"finalization-failed:{self.scorer.scorer_version}:{attempt}",
                     "eval.pair.finalization.failed",
                     {
                         "active_scorer_version": self.scorer.scorer_version,
+                        "attempt": attempt,
                         "error_type": type(exc).__name__,
                         "reason": str(exc),
-                        "automatic_retry": False,
+                        "automatic_retry": attempt < 3,
                     },
                 )
+                progressed += 1
                 continue
-            completed += finalized.status == "completed"
-        return completed
+            progressed += finalized.status == "completed"
+        return progressed
 
     def _build_contract(
         self,
@@ -546,6 +736,18 @@ class PairedEvalService:
                 if request.model_mode == "scripted"
                 else EvidenceTier.LIVE_PAIRED
             ),
+            harness_profile={
+                "single_behavior_version": str(
+                    single_event.payload.get("behavior_version", "")
+                ),
+                "team_behavior_version": str(
+                    team_event.payload.get("behavior_version", "")
+                ),
+                "supervisor_policy": str(
+                    team_event.payload.get("supervisor_policy", "")
+                ),
+                "team_contract": dict(team_event.payload.get("team_contract") or {}),
+            },
             single=PairedEvalArm(
                 execution_mode="single",
                 run_id=single.run_id,
@@ -690,8 +892,7 @@ class PairedEvalService:
 
     @staticmethod
     def _eval_id(request_id: str) -> str:
-        value = uuid5(NAMESPACE_URL, f"crazy:eval-request:{request_id}")
-        return f"eval_{value.hex[:12]}"
+        return paired_eval_id(request_id)
 
     @staticmethod
     def _arm_identity(

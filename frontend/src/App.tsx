@@ -2,6 +2,8 @@ import { X } from "lucide-react";
 import { useState } from "react";
 
 import { AgentRail } from "./components/AgentRail";
+import { CampaignBand } from "./components/CampaignBand";
+import { CreateCampaignDialog } from "./components/CreateCampaignDialog";
 import { CreateEvalDialog } from "./components/CreateEvalDialog";
 import { CreateRunDialog } from "./components/CreateRunDialog";
 import { EvalComparisonBand } from "./components/EvalComparisonBand";
@@ -9,6 +11,7 @@ import { InspectorPanel, type InspectorTab } from "./components/InspectorPanel";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { useControlPlane } from "./hooks/useControlPlane";
+import { useEvalCampaign } from "./hooks/useEvalCampaign";
 import { usePairedEval } from "./hooks/usePairedEval";
 
 export default function App() {
@@ -17,9 +20,11 @@ export default function App() {
     activeRunId: control.runId,
     onSelectRun: control.selectRun,
   });
+  const campaign = useEvalCampaign();
   const [showAll, setShowAll] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [evalDialogOpen, setEvalDialogOpen] = useState(false);
+  const [campaignDialogOpen, setCampaignDialogOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("event");
 
   const openChaos = () => {
@@ -28,26 +33,42 @@ export default function App() {
   };
 
   return (
-    <div className={`control-room ${pairedEval.evalId ? "has-eval" : ""}`}>
+    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""}`}>
       <TopBar
         snapshot={control.snapshot}
         streamState={control.streamState}
         eventCount={control.events.length}
-        busy={control.busy || pairedEval.busy}
+        busy={control.busy || pairedEval.busy || campaign.busy}
         onNewRun={() => setDialogOpen(true)}
         onNewEval={() => setEvalDialogOpen(true)}
+        onNewCampaign={() => setCampaignDialogOpen(true)}
         onCancel={() => void control.cancelRun()}
         onChaos={openChaos}
       />
-      {pairedEval.evalId && (
-        <EvalComparisonBand
-          evalId={pairedEval.evalId}
-          report={pairedEval.report}
-          loading={pairedEval.loading}
-          selectedArm={pairedEval.selectedArm}
-          onSelectArm={pairedEval.selectArm}
-          onClose={() => pairedEval.clearEval()}
-        />
+      {(campaign.campaignId || pairedEval.evalId) && (
+        <div className="eval-stack">
+          {campaign.campaignId && (
+            <CampaignBand
+              campaignId={campaign.campaignId}
+              report={campaign.report}
+              loading={campaign.loading}
+              busy={campaign.busy}
+              onOpenTrial={pairedEval.openEval}
+              onCancel={() => void campaign.cancelCampaign()}
+              onClose={() => campaign.clearCampaign()}
+            />
+          )}
+          {pairedEval.evalId && (
+            <EvalComparisonBand
+              evalId={pairedEval.evalId}
+              report={pairedEval.report}
+              loading={pairedEval.loading}
+              selectedArm={pairedEval.selectedArm}
+              onSelectArm={pairedEval.selectArm}
+              onClose={() => pairedEval.clearEval()}
+            />
+          )}
+        </div>
       )}
       <div className="workspace">
         <AgentRail snapshot={control.snapshot} />
@@ -84,6 +105,7 @@ export default function App() {
         onSubmit={async (request) => {
           const created = await control.createRun(request);
           pairedEval.clearEval();
+          campaign.clearCampaign();
           return created;
         }}
       />
@@ -92,14 +114,30 @@ export default function App() {
         busy={pairedEval.busy}
         deepseekConfigured={control.snapshot?.runtime.deepseek_configured ?? false}
         onClose={() => setEvalDialogOpen(false)}
-        onSubmit={pairedEval.createEval}
+        onSubmit={async (request) => {
+          const created = await pairedEval.createEval(request);
+          if (created) campaign.clearCampaign();
+          return created;
+        }}
       />
-      {(pairedEval.notice || control.notice) && (
+      <CreateCampaignDialog
+        open={campaignDialogOpen}
+        busy={campaign.busy}
+        deepseekConfigured={control.snapshot?.runtime.deepseek_configured ?? false}
+        onClose={() => setCampaignDialogOpen(false)}
+        onSubmit={async (request) => {
+          const created = await campaign.createCampaign(request);
+          if (created) pairedEval.clearEval();
+          return created;
+        }}
+      />
+      {(campaign.notice || pairedEval.notice || control.notice) && (
         <div className="notice" role="status">
-          <span>{pairedEval.notice || control.notice}</span>
+          <span>{campaign.notice || pairedEval.notice || control.notice}</span>
           <button
             className="icon-only"
             onClick={() => {
+              campaign.setNotice(null);
               pairedEval.setNotice(null);
               control.setNotice(null);
             }}

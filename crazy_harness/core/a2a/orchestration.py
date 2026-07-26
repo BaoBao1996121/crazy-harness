@@ -127,6 +127,20 @@ class PlanPatch(BaseModel):
     assignments: tuple[AssignmentProposal, ...] = ()
     completion_ready: bool = False
     blocked_reason: str | None = None
+    waiting_reason: str | None = None
+    waiting_stage_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def terminal_directives_are_unambiguous(self) -> PlanPatch:
+        if self.blocked_reason and self.waiting_reason:
+            raise ValueError("plan patch cannot be blocked and waiting at once")
+        if (self.blocked_reason or self.waiting_reason) and self.assignments:
+            raise ValueError("blocked or waiting plan patch cannot create assignments")
+        if self.completion_ready and (self.blocked_reason or self.waiting_reason):
+            raise ValueError("completion-ready plan patch cannot be blocked or waiting")
+        if self.waiting_stage_ids and not self.waiting_reason:
+            raise ValueError("waiting stage ids require a waiting reason")
+        return self
 
     def command_payload(self) -> dict:
         return self.model_dump(mode="json")
@@ -160,6 +174,7 @@ class CapabilitySupervisorPolicy:
     """Deterministic baseline policy driven by DAG readiness, capability, and load."""
 
     _AVAILABLE = {AgentStatus.IDLE, AgentStatus.BUSY}
+    _TRANSIENTLY_UNAVAILABLE = {AgentStatus.IDLE, AgentStatus.BUSY, AgentStatus.WAITING}
 
     def propose(self, contract: TeamContract, context: SupervisorContext) -> PlanPatch:
         all_stage_ids = frozenset(stage.stage_id for stage in contract.stages)
@@ -197,13 +212,17 @@ class CapabilitySupervisorPolicy:
         selected: list[AssignmentProposal] = []
         selected_by_stage: dict[str, str] = {}
         unavailable: list[str] = []
+        capacity_waiting: list[str] = []
 
         for stage in ready:
             if len(selected) >= remaining_capacity:
                 break
             card = self._select_card(stage, context, loads)
             if card is None:
-                unavailable.append(stage.stage_id)
+                if self._has_transiently_unavailable_card(stage, context):
+                    capacity_waiting.append(stage.stage_id)
+                else:
+                    unavailable.append(stage.stage_id)
                 continue
             attempt = int(context.attempts.get(stage.stage_id, 0)) + 1
             selected.append(
@@ -227,6 +246,7 @@ class CapabilitySupervisorPolicy:
             loads[card.agent_id] = int(loads.get(card.agent_id, 0)) + 1
 
         blocked_reason = None
+        waiting_reason = None
         if exhausted and not selected and not active:
             blocked_reason = (
                 f"stage_attempt_budget_exhausted:{','.join(sorted(exhausted))}"
@@ -234,6 +254,10 @@ class CapabilitySupervisorPolicy:
         elif unavailable and not selected and not active:
             blocked_reason = (
                 f"no_available_capable_agent:{','.join(sorted(unavailable))}"
+            )
+        elif capacity_waiting and not selected and not active:
+            waiting_reason = (
+                f"agent_capacity_unavailable:{','.join(sorted(capacity_waiting))}"
             )
         if selected:
             reason = "capability_and_status_match:" + ",".join(
@@ -243,6 +267,8 @@ class CapabilitySupervisorPolicy:
             reason = "waiting_for_active_assignments"
         elif blocked_reason:
             reason = blocked_reason
+        elif waiting_reason:
+            reason = waiting_reason
         else:
             reason = "waiting_for_stage_dependencies"
 
@@ -265,6 +291,8 @@ class CapabilitySupervisorPolicy:
             ),
             assignments=tuple(selected),
             blocked_reason=blocked_reason,
+            waiting_reason=waiting_reason,
+            waiting_stage_ids=tuple(sorted(capacity_waiting)),
         )
 
     def _select_card(
@@ -290,6 +318,18 @@ class CapabilitySupervisorPolicy:
                 len(set(card.capabilities) - stage.required_capabilities),
                 card.agent_id,
             ),
+        )
+
+    def _has_transiently_unavailable_card(
+        self,
+        stage: TeamStageSpec,
+        context: SupervisorContext,
+    ) -> bool:
+        return any(
+            stage.required_capabilities.issubset(set(card.capabilities))
+            and context.statuses.get(card.agent_id, AgentStatus.OFFLINE)
+            in self._TRANSIENTLY_UNAVAILABLE
+            for card in context.cards
         )
 
     @staticmethod

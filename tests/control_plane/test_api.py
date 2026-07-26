@@ -70,10 +70,230 @@ def test_http_can_run_and_replay_a_single_vs_team_eval_pair(tmp_path):
     assert replay.json()["status"] == "completed"
     assert replay.json()["single"]["score"]["passed"] is True
     assert replay.json()["team"]["score"]["passed"] is True
-    assert replay.json()["recommendation"]["outcome"] == (
-        "insufficient_live_evidence"
-    )
+    assert replay.json()["recommendation"]["outcome"] == ("insufficient_live_evidence")
     assert [item["eval_id"] for item in listed.json()] == [eval_id]
+
+
+def test_campaign_http_create_freezes_parent_and_get_remains_pure_read(tmp_path):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/evals/campaigns",
+            json={
+                "request_id": "api-campaign-create-1",
+                "title": "Persistent paired campaign",
+                "brief": "Prepare two trials without running them during GET.",
+                "trial_count": 2,
+                "max_parallel_pairs": 1,
+            },
+        )
+        assert created.status_code == 201
+        campaign_id = created.json()["campaign_id"]
+        before = len(runtime.store.read_records())
+
+        fetched = client.get(f"/api/evals/campaigns/{campaign_id}")
+        listed = client.get("/api/evals/campaigns")
+        missing = client.get("/api/evals/campaigns/campaign_missing")
+        after = len(runtime.store.read_records())
+
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "running"
+    assert fetched.json()["completed_trial_count"] == 0
+    assert [item["campaign_id"] for item in listed.json()] == [campaign_id]
+    assert missing.status_code == 404
+    assert after == before
+    assert not any(
+        event.type == "eval.pair.requested" for event in runtime.store.read_all()
+    )
+
+
+def test_http_can_cancel_a_campaign_idempotently_and_get_stays_pure(tmp_path):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/evals/campaigns",
+            json={
+                "request_id": "api-campaign-cancel-1",
+                "title": "Cancel campaign",
+                "brief": "Cancellation is a durable terminal fact.",
+                "trial_count": 2,
+            },
+        )
+        campaign_id = created.json()["campaign_id"]
+
+        first = client.post(f"/api/evals/campaigns/{campaign_id}/cancel")
+        second = client.post(f"/api/evals/campaigns/{campaign_id}/cancel")
+        drained = client.post(f"/api/evals/campaigns/{campaign_id}/drain")
+        after_cancel = len(runtime.store.read_records())
+        fetched = client.get(f"/api/evals/campaigns/{campaign_id}")
+        listed = client.get("/api/evals/campaigns")
+        after_reads = len(runtime.store.read_records())
+        missing = client.post("/api/evals/campaigns/campaign_missing/cancel")
+
+    assert created.status_code == 201
+    assert first.status_code == 200
+    assert first.json() == second.json() == drained.json() == fetched.json()
+    assert first.json()["status"] == "cancelled"
+    assert [item["status"] for item in listed.json()] == ["cancelled"]
+    assert after_reads == after_cancel
+    assert missing.status_code == 404
+    assert (
+        sum(
+            event.type == "eval.campaign.cancelled"
+            for event in runtime.store.read_all(run_id=campaign_id)
+        )
+        == 1
+    )
+    assert not any(
+        event.type
+        in {
+            "eval.campaign.trial.started",
+            "eval.campaign.trial.released",
+            "eval.pair.requested",
+        }
+        for event in runtime.store.read_all()
+    )
+
+
+def test_campaign_drain_advances_only_the_requested_campaign(tmp_path):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        campaign_ids = []
+        for suffix in ("target", "other"):
+            response = client.post(
+                "/api/evals/campaigns",
+                json={
+                    "request_id": f"api-scoped-campaign-{suffix}",
+                    "title": f"Campaign {suffix}",
+                    "brief": "Only the explicitly drained campaign may advance.",
+                    "trial_count": 1,
+                },
+            )
+            campaign_ids.append(response.json()["campaign_id"])
+        ordinary = client.post(
+            "/api/runs",
+            json={
+                "title": "Unrelated resident task",
+                "brief": "This task must remain queued during Campaign drain.",
+                "model_mode": "scripted",
+                "execution_mode": "team",
+                "task_pack": "resident-demo",
+            },
+        ).json()
+
+        target = client.post(f"/api/evals/campaigns/{campaign_ids[0]}/drain")
+        other = client.get(f"/api/evals/campaigns/{campaign_ids[1]}")
+
+    assert target.status_code == 200
+    assert target.json()["status"] == "completed"
+    assert other.json()["status"] == "running"
+    assert other.json()["completed_trial_count"] == 0
+    assert not any(
+        event.type == "eval.campaign.trial.started"
+        for event in runtime.store.read_all(run_id=campaign_ids[1])
+    )
+    assert not any(
+        event.type == "model.completed"
+        for event in runtime.store.read_all(run_id=ordinary["run_id"])
+    )
+
+
+def test_openapi_exposes_campaigns_but_not_internal_pair_release_controls(tmp_path):
+    schema = create_app(tmp_path, background=False).openapi()
+
+    for path in (
+        "/api/evals/campaigns",
+        "/api/evals/campaigns/{campaign_id}",
+        "/api/evals/campaigns/{campaign_id}/drain",
+        "/api/evals/campaigns/{campaign_id}/cancel",
+    ):
+        assert path in schema["paths"]
+    campaign_operations = {
+        ("/api/evals/campaigns", "post"): {"400", "409", "422"},
+        ("/api/evals/campaigns/{campaign_id}", "get"): {"404", "422"},
+        ("/api/evals/campaigns/{campaign_id}/drain", "post"): {"404", "422"},
+        ("/api/evals/campaigns/{campaign_id}/cancel", "post"): {
+            "404",
+            "409",
+            "422",
+        },
+    }
+    for (path, method), expected in campaign_operations.items():
+        responses = schema["paths"][path][method]["responses"]
+        assert expected.issubset(responses)
+        for status_code in expected - {"422"}:
+            error_schema = responses[status_code]["content"]["application/json"][
+                "schema"
+            ]
+            assert error_schema["$ref"].endswith("/ApiErrorResponse")
+    pair_post = schema["paths"]["/api/evals/pairs"]["post"]
+    body_schema = pair_post["requestBody"]["content"]["application/json"]["schema"]
+    ref_name = body_schema["$ref"].rsplit("/", 1)[-1]
+    pair_properties = schema["components"]["schemas"][ref_name]["properties"]
+    assert "release_policy" not in pair_properties
+    assert "parent_campaign_id" not in pair_properties
+    assert "parent_trial_index" not in pair_properties
+
+
+def test_campaign_http_errors_match_the_structured_openapi_contract(
+    tmp_path,
+    monkeypatch,
+):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+
+    with TestClient(app) as client:
+        missing = client.get("/api/evals/campaigns/campaign_missing")
+
+        monkeypatch.setattr(
+            runtime,
+            "create_eval_campaign",
+            lambda _request: (_ for _ in ()).throw(ValueError("invalid envelope")),
+        )
+        invalid = client.post(
+            "/api/evals/campaigns",
+            json={
+                "request_id": "api-campaign-invalid-contract-1",
+                "title": "Invalid campaign",
+                "brief": "Exercise the structured error contract.",
+            },
+        )
+
+        monkeypatch.setattr(
+            runtime,
+            "create_eval_campaign",
+            lambda _request: (_ for _ in ()).throw(TimeoutError("claim busy")),
+        )
+        conflict = client.post(
+            "/api/evals/campaigns",
+            json={
+                "request_id": "api-campaign-conflict-contract-1",
+                "title": "Conflicting campaign",
+                "brief": "Exercise the retryable error contract.",
+            },
+        )
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == {
+        "code": "eval_campaign_not_found",
+        "message": "campaign not found",
+        "retryable": False,
+    }
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == {
+        "code": "eval_campaign_invalid_request",
+        "message": "invalid envelope",
+        "retryable": False,
+    }
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {
+        "code": "eval_campaign_creation_in_progress",
+        "message": "claim busy",
+        "retryable": True,
+    }
 
 
 @pytest.mark.smoke
@@ -103,10 +323,16 @@ def test_http_snapshot_and_finite_sse_feed_share_the_same_event_cursor(tmp_path)
 def test_fault_can_be_armed_through_control_api(tmp_path):
     app = create_app(tmp_path, background=False)
     with TestClient(app) as client:
-        armed = client.post("/api/chaos/faults", json={"point": "after_candidate_persisted"})
-        created = client.post("/api/runs", json={"title": "Chaos", "brief": "Recover once."}).json()
+        armed = client.post(
+            "/api/chaos/faults", json={"point": "after_candidate_persisted"}
+        )
+        created = client.post(
+            "/api/runs", json={"title": "Chaos", "brief": "Recover once."}
+        ).json()
         client.post(f"/api/runs/{created['run_id']}/drain")
-        events = client.get(f"/api/events?run_id={created['run_id']}&after=0").json()["items"]
+        events = client.get(f"/api/events?run_id={created['run_id']}&after=0").json()[
+            "items"
+        ]
 
         assert armed.status_code == 200
         assert any(item["event"]["type"] == "runtime.agent.crashed" for item in events)

@@ -26,6 +26,7 @@ def context(
     completed: frozenset[str] = frozenset(),
     active: frozenset[str] = frozenset(),
     attempts: dict[str, int] | None = None,
+    active_loads: dict[str, int] | None = None,
 ) -> SupervisorContext:
     return SupervisorContext(
         run_id="run-1",
@@ -37,7 +38,7 @@ def context(
         completed_stage_ids=completed,
         active_stage_ids=active,
         attempts=attempts or {},
-        active_loads={},
+        active_loads=active_loads or {},
     )
 
 
@@ -120,6 +121,63 @@ def test_unserviceable_ready_stage_does_not_consume_assignment_capacity():
     assert [(item.stage_id, item.agent_id) for item in patch.assignments] == [
         ("z-serviceable", "collector")
     ]
+
+
+def test_capacity_exhaustion_is_waiting_state_not_permanent_blockage():
+    contract = TeamContract(
+        contract_id="capacity-wait",
+        stages=(
+            TeamStageSpec(
+                stage_id="repair",
+                result_kind="artifact",
+                goal="repair the repository",
+                required_capabilities=frozenset({"repo.edit"}),
+            ),
+        ),
+    )
+    builder = card("builder", "repo.edit")
+
+    patch = CapabilitySupervisorPolicy().propose(
+        contract,
+        context(
+            cards=(builder,),
+            statuses={"builder": AgentStatus.BUSY},
+            active_loads={"builder": 1},
+        ),
+    )
+
+    assert patch.assignments == ()
+    assert patch.waiting_reason == "agent_capacity_unavailable:repair"
+    assert patch.waiting_stage_ids == ("repair",)
+    assert patch.blocked_reason is None
+    assert patch.stages[0].state == "ready"
+
+
+def test_capacity_waiting_keeps_stage_ids_structured_when_ids_contain_delimiters():
+    stage_id = "repair,hotfix:v2"
+    contract = TeamContract(
+        contract_id="capacity-wait-structured",
+        stages=(
+            TeamStageSpec(
+                stage_id=stage_id,
+                result_kind="artifact",
+                goal="repair the repository",
+                required_capabilities=frozenset({"repo.edit"}),
+            ),
+        ),
+    )
+    builder = card("builder", "repo.edit")
+
+    patch = CapabilitySupervisorPolicy().propose(
+        contract,
+        context(
+            cards=(builder,),
+            statuses={"builder": AgentStatus.BUSY},
+            active_loads={"builder": 1},
+        ),
+    )
+
+    assert patch.waiting_stage_ids == (stage_id,)
 
 
 def test_supervisor_uses_backup_after_primary_is_degraded():
