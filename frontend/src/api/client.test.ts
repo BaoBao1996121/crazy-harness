@@ -61,4 +61,28 @@ describe("paired eval API", () => {
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
   });
+
+  it("uses the checkpoint create, list, inspect, and fork restore routes", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createCheckpoint("run/one", { request_id: "checkpoint-1", label: "修改后" });
+    await api.listCheckpoints("run/one");
+    await api.checkpoint("checkpoint/one");
+    await api.restoreCheckpoint("checkpoint/one", { request_id: "restore-1" });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/runs/run%2Fone/checkpoints",
+      "/api/runs/run%2Fone/checkpoints",
+      "/api/checkpoints/checkpoint%2Fone",
+      "/api/checkpoints/checkpoint%2Fone/restore",
+    ]);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
+  });
 });

@@ -54,6 +54,23 @@ vi.mock("./hooks/useEvalCampaign", () => ({
   }),
 }));
 
+vi.mock("./hooks/useCheckpoints", () => ({
+  useCheckpoints: () => ({
+    checkpoints: [],
+    selected: null,
+    label: "",
+    loading: false,
+    busy: false,
+    notice: null,
+    setLabel: vi.fn(),
+    setNotice: vi.fn(),
+    selectCheckpoint: vi.fn(),
+    createCheckpoint: vi.fn(),
+    restoreCheckpoint: vi.fn(),
+    refresh: vi.fn(),
+  }),
+}));
+
 describe("Control Room campaign integration", () => {
   it("renders a persisted Campaign as a first-class control surface", () => {
     const html = renderToStaticMarkup(<App />);

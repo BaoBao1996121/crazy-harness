@@ -247,3 +247,33 @@
 - **证据**：PR #16 绿色 CI 安装 `0.15.22`；PR #18 失败 CI 安装 `0.16.0`；本机切换到 `0.15.22` 后执行 CI 原命令，结果为 `All checks passed`。
 - **效果**：CI 工具链可重复，不再因当天解析到的新 Linter 规则阻断无关功能 PR；Ruff 规则升级可以在独立维护分支中审查和修复，而不是夹带 188 处机械改写。
 - **边界**：这不是永久拒绝 Ruff 0.16；升级仍应单独执行并评估新增规则。Python 运行时依赖目前仍使用兼容范围，后续是否引入完整 lockfile 需单独设计。
+
+### 20:58 Composite Checkpoint CP0 契约与关键假设冻结
+
+- **时间**：2026-07-26 20:58:00 +08:00。
+- **动作**：从已合并的 Campaign 主线创建 `feat/composite-checkpoint-v09`；比较 Event-only、Workspace-only 与 Composite 三种方案，冻结“旧 Run 不改写、默认 Fork Restore、Context 从可验证事实重编译、外部 Effect 不伪造撤销”的第一版契约。
+- **证据**：`verify_checkpoint_snapshot_roundtrip.py`、`verify_checkpoint_event_prefix.py`、`verify_checkpoint_prepare_before_release.py` 分别为 19、20、18 行并全部 PASS；设计文档 `COMPOSITE_CHECKPOINT_DESIGN.md` 的 Markdown fence 成对。
+- **效果**：Checkpoint 的对象、边界与恢复语义已经可直接转成 RED 测试，不再把“复制数据库”“Git reset”或“恢复聊天记录”混称为同一种能力。
+- **边界**：第一版只做 `repo-maintainer` 单 Agent disposable workspace、手动安全边界和 Fork Restore；Team、多工作区、Remote A2A、容器层与外部补偿器均保留后续。
+
+设计审查：5/5 通过。CP0 不新增第三方依赖；未声明性能数字；超时/半提交/对象篡改/Artifact 缺失/Event 漂移/路径逃逸/Unknown Effect 均进入异常设计；文件数、容量和保留窗口尚未拍值，明确留作可配置初始阈值；范围没有越出单 Agent 本地 MVP。
+
+### 21:48 Composite Checkpoint CP1-CP3 真实纵切与 Restore Crash Matrix
+
+- **时间**：2026-07-26 21:48:00 +08:00。
+- **动作**：实现内容寻址 Workspace Snapshot、完整 CheckpointContract、静止屏障、单 Agent Fork Restore、恢复胶囊、四个 HTTP API 与中英双语 Control Room；在恢复工作区后和 `checkpoint.restore.committed` 后分别注入一次进程崩溃，用同一 `restore_request_id` 跨 Runtime 重试。提交前审阅又将本机 `baseline_path` 替换为不可反推路径的 `baseline_identity`，Artifact 契约只暴露受管 `artifact_id`，并拒绝制品根目录外的引用。
+- **证据**：快照/契约/Barrier/Runtime 邻接回归先后通过，最新 Restore 故障组为 `4 passed in 36.62s`，Checkpoint Service 信任边界为 `9 passed`，Checkpoint/API 受影响组为 `12 passed`，AgentLoop 为 `14 passed`；前端全量为 `22 files / 84 tests passed`，Production Build 1,607 modules 成功。真实 HTTP/UI 路径从 `checkpoint_97c6e14ea9325acd88acdc1f2383ad07` 派生 `run_dc24a73e115a`，来源阶段为 `result_recording`，旧 Run 未被覆盖。桌面与移动实机证据为 `docs/assets/checkpoint-fork-restore-desktop.png` 和 `docs/assets/checkpoint-fork-restore-mobile.png`。
+- **效果**：Checkpoint 不再只是 Event cursor 或文件备份，而是可校验的 Workspace、Harness 状态引用、Artifact 和 Effect 边界契约；恢复遵守“先准备、后发布”，崩溃重试复用同一 Run，`run.created`、恢复提交和 Mailbox Delivery 各只有一份。用户能在前端直接看见来源阶段、Turn、文件、制品、副作用和恢复限制。
+- **边界**：第一版只支持 `repo-maintainer` 单 Agent 本地工作区；5 分钟 Barrier TTL、2,000 文件和 100 MB 是初始值，尚未做大仓库压测。外部不可逆/Unknown Effect 默认阻止恢复，没有补偿 Adapter；Team 多工作区、容器/Git 快照、自动逐 Turn Checkpoint 与对象 GC 留待后续。当前证据使用 Scripted Provider，不代表真实 DeepSeek 的任务质量。
+
+设计审查：5/5 通过。无新增第三方 Runtime 依赖；测试数、对象大小和 UI 身份均来自本机实测；超时、半提交、篡改、路径逃逸、未闭合调用、不可逆/Unknown Effect 与两个 Restore 崩溃窗口均有处理；TTL/文件数/容量明确为初始值待调优；范围保持单 Agent disposable workspace MVP。
+
+### 22:18 Composite Checkpoint v0.9 发布门禁通过
+
+- **时间**：2026-07-26 22:18:00 +08:00。
+- **动作**：将 Control Plane 和新 Single/Team Run 的行为版本统一为 `v0.9.0-dev`；推送 `feat/composite-checkpoint-v09`，创建 PR #19，并执行本机课程就绪检查与 GitHub Ubuntu 3.11、Windows 3.13、Frontend 三平台 CI。
+- **证据**：本机参考套件 `381 passed, 3 skipped in 1237.91s`，课程检查总用时 `1299.6s`，17/17 required checks 全部通过，状态为 `ready_with_external_gates`；GitHub Ubuntu 后端 `3m34s`、Windows 后端 `15m16s`、Frontend `20s` 全绿。PR 为 `https://github.com/BaoBao1996121/crazy-harness/pull/19`。
+- **效果**：CP0 契约、CP1 快照/服务、CP2 Fork Restore、CP3 HTTP/UI 和 CP4 Crash/Release 已形成可公开复现的完整 MVP；Linux、Windows、Python 3.11/3.13 与生产前端构建都验证了同一提交。
+- **边界**：本机仍未配置 `DEEPSEEK_API_KEY`，Docker CLI/Engine 仍不可用，因此 Live LLM 与真正容器沙箱保持外部门槛；默认分支另有一个 `js-yaml <4.3.0` 的开发依赖 High 告警，将在独立安全 PR 处理，不夹带进 Checkpoint PR。
+
+设计审查：5/5 通过。外部依赖与跨平台兼容由 CI 验证；耗时和测试数字均为实测；本地与远端失败路径无新增红灯；5 分钟/2,000 文件/100 MB 仍是明确的初始阈值；发布范围没有越出单 Agent Composite Checkpoint MVP。

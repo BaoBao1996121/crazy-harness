@@ -19,6 +19,14 @@ from crazy_harness.control_plane.eval_campaigns import (
     EvalCampaignReport,
     EvalCampaignRequest,
 )
+from crazy_harness.control_plane.checkpoints import (
+    CheckpointCreateRequest,
+    CheckpointIdempotencyConflict,
+    CheckpointRestored,
+    CheckpointRestoreBlocked,
+    CheckpointRestoreRequest,
+    UnsafeCheckpointBoundary,
+)
 from crazy_harness.control_plane.model_governance import ModelBudgetConfig
 
 from crazy_harness.control_plane.paired_evals import (
@@ -29,6 +37,7 @@ from crazy_harness.control_plane.paired_evals import (
 )
 from crazy_harness.control_plane.runtime import ResidentRuntime, RunCreated, TaskRequest
 from crazy_harness.control_plane.kernel import KernelDecision
+from crazy_harness.core.checkpoints import CheckpointContract, CheckpointIntegrityError
 from crazy_harness.control_plane.views import (
     CancelResult,
     DrainResult,
@@ -39,7 +48,7 @@ from crazy_harness.control_plane.views import (
     SnapshotView,
 )
 
-CONTROL_PLANE_VERSION = "0.8.0-dev"
+CONTROL_PLANE_VERSION = "0.9.0-dev"
 
 
 class FaultRequest(BaseModel):
@@ -298,6 +307,58 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
             return CancelResult.model_validate(runtime.cancel_run(run_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.post(
+        "/api/runs/{run_id}/checkpoints",
+        status_code=status.HTTP_201_CREATED,
+        response_model=CheckpointContract,
+    )
+    def create_checkpoint(
+        run_id: str,
+        request: CheckpointCreateRequest,
+    ) -> CheckpointContract:
+        try:
+            return runtime.create_checkpoint(run_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        except (UnsafeCheckpointBoundary, CheckpointIdempotencyConflict) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/runs/{run_id}/checkpoints",
+        response_model=list[CheckpointContract],
+    )
+    def list_checkpoints(run_id: str) -> list[CheckpointContract]:
+        if runtime.store.projection("run", run_id) is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return runtime.checkpoints.list_for_run(run_id)
+
+    @app.get(
+        "/api/checkpoints/{checkpoint_id}",
+        response_model=CheckpointContract,
+    )
+    def get_checkpoint(checkpoint_id: str) -> CheckpointContract:
+        try:
+            return runtime.checkpoints.contract(checkpoint_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="checkpoint not found") from exc
+
+    @app.post(
+        "/api/checkpoints/{checkpoint_id}/restore",
+        response_model=CheckpointRestored,
+    )
+    def restore_checkpoint(
+        checkpoint_id: str,
+        request: CheckpointRestoreRequest,
+    ) -> CheckpointRestored:
+        try:
+            return runtime.restore_checkpoint(checkpoint_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="checkpoint not found") from exc
+        except (CheckpointRestoreBlocked, CheckpointIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/snapshot", response_model=SnapshotView)
     def snapshot(run_id: str | None = None) -> SnapshotView:

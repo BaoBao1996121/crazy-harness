@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArchiveRestore,
   CircleStop,
   CirclePlus,
   Database,
@@ -24,6 +25,7 @@ interface TopBarProps {
   onNewRun: () => void;
   onNewEval: () => void;
   onNewCampaign: () => void;
+  onCheckpoints: () => void;
   onCancel: () => void;
   onChaos: () => void;
 }
@@ -36,6 +38,7 @@ export function TopBar({
   onNewRun,
   onNewEval,
   onNewCampaign,
+  onCheckpoints,
   onCancel,
   onChaos,
 }: TopBarProps) {
@@ -97,6 +100,17 @@ export function TopBar({
       </div>
 
       <div className="topbar-actions">
+        {run && (
+          <button
+            className="icon-command secondary"
+            onClick={onCheckpoints}
+            disabled={busy}
+            title="创建或恢复检查点 / Checkpoints"
+          >
+            <ArchiveRestore size={17} aria-hidden="true" />
+            <span>检查点</span>
+          </button>
+        )}
         {canCancel && (
           <button
             className="icon-command cancel-command"

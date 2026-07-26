@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { AgentRail } from "./components/AgentRail";
 import { CampaignBand } from "./components/CampaignBand";
+import { CheckpointBand } from "./components/CheckpointBand";
 import { CreateCampaignDialog } from "./components/CreateCampaignDialog";
 import { CreateEvalDialog } from "./components/CreateEvalDialog";
 import { CreateRunDialog } from "./components/CreateRunDialog";
@@ -11,6 +12,7 @@ import { InspectorPanel, type InspectorTab } from "./components/InspectorPanel";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { useControlPlane } from "./hooks/useControlPlane";
+import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useEvalCampaign } from "./hooks/useEvalCampaign";
 import { usePairedEval } from "./hooks/usePairedEval";
 
@@ -21,6 +23,12 @@ export default function App() {
     onSelectRun: control.selectRun,
   });
   const campaign = useEvalCampaign();
+  const [checkpointOpen, setCheckpointOpen] = useState(false);
+  const checkpoints = useCheckpoints({
+    runId: control.runId,
+    enabled: checkpointOpen,
+    onSelectRun: control.selectRun,
+  });
   const [showAll, setShowAll] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [evalDialogOpen, setEvalDialogOpen] = useState(false);
@@ -33,15 +41,16 @@ export default function App() {
   };
 
   return (
-    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""}`}>
+    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""} ${checkpointOpen && control.runId ? "has-checkpoint" : ""}`}>
       <TopBar
         snapshot={control.snapshot}
         streamState={control.streamState}
         eventCount={control.events.length}
-        busy={control.busy || pairedEval.busy || campaign.busy}
+        busy={control.busy || pairedEval.busy || campaign.busy || checkpoints.busy}
         onNewRun={() => setDialogOpen(true)}
         onNewEval={() => setEvalDialogOpen(true)}
         onNewCampaign={() => setCampaignDialogOpen(true)}
+        onCheckpoints={() => setCheckpointOpen(true)}
         onCancel={() => void control.cancelRun()}
         onChaos={openChaos}
       />
@@ -69,6 +78,21 @@ export default function App() {
             />
           )}
         </div>
+      )}
+      {checkpointOpen && control.runId && (
+        <CheckpointBand
+          runId={control.runId}
+          checkpoints={checkpoints.checkpoints}
+          selected={checkpoints.selected}
+          label={checkpoints.label}
+          loading={checkpoints.loading}
+          busy={checkpoints.busy}
+          onLabelChange={checkpoints.setLabel}
+          onCreate={() => void checkpoints.createCheckpoint()}
+          onSelect={checkpoints.selectCheckpoint}
+          onRestore={(checkpointId) => void checkpoints.restoreCheckpoint(checkpointId)}
+          onClose={() => setCheckpointOpen(false)}
+        />
       )}
       <div className="workspace">
         <AgentRail snapshot={control.snapshot} />
@@ -131,14 +155,15 @@ export default function App() {
           return created;
         }}
       />
-      {(campaign.notice || pairedEval.notice || control.notice) && (
+      {(checkpoints.notice || campaign.notice || pairedEval.notice || control.notice) && (
         <div className="notice" role="status">
-          <span>{campaign.notice || pairedEval.notice || control.notice}</span>
+          <span>{checkpoints.notice || campaign.notice || pairedEval.notice || control.notice}</span>
           <button
             className="icon-only"
             onClick={() => {
               campaign.setNotice(null);
               pairedEval.setNotice(null);
+              checkpoints.setNotice(null);
               control.setNotice(null);
             }}
             title="关闭提示 / Dismiss"

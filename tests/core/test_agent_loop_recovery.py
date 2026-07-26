@@ -134,7 +134,14 @@ def test_reopened_ledger_recovers_confirmed_effect_without_executing_it_twice(tm
     event_log = EventLog(tmp_path / "events.jsonl")
     event_log.append(Event(run_id="r1", task_id="t1", type="seed", source="test"))
     tools = ToolRegistry()
-    tools.register(ToolSpec(name="effect", description="one external effect"), effect)
+    tools.register(
+        ToolSpec(
+            name="effect",
+            description="one external effect",
+            side_effect_level="idempotent_external",
+        ),
+        effect,
+    )
     context = PolicyContext(
         agent_id="builder",
         assignment_id="t1",
@@ -173,6 +180,8 @@ def test_reopened_ledger_recovers_confirmed_effect_without_executing_it_twice(tm
 
     events = event_log.read_all(task_id="t1")
     assert counter.read_text() == "1"
+    started = next(event for event in events if event.type == "operation.started")
+    assert started.payload["side_effect_level"] == "idempotent_external"
     assert any(event.payload.get("recovered_from_ledger") for event in events if event.type == "tool.completed")
     assert events[-1].type == "agent.stopped"
     assert resumed_model.call_count == 1

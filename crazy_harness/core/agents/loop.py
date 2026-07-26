@@ -390,6 +390,9 @@ class AgentLoop:
                     "operation_id": operation_id,
                     "tool_name": action.tool_name,
                     "tool_args": action.tool_args,
+                    # Checkpoint 只能依据执行前持久化的工具声明判断恢复边界，
+                    # 不能在事后靠工具名称猜测是否产生了外部副作用。
+                    "side_effect_level": self.tool_registry.spec(action.tool_name or "").side_effect_level,
                 },
                 causation_id=command_event.id,
             )
@@ -727,6 +730,7 @@ class AgentLoop:
                     "tool_args": effective_args,
                     "hook_patched": effective_args != action.tool_args,
                     "idempotency_key": record.idempotency_key,
+                    "side_effect_level": invocation.spec.side_effect_level,
                 },
                 causation_id=command_event.id,
             )

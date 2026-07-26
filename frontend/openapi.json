@@ -510,6 +510,184 @@
         }
       }
     },
+    "/api/runs/{run_id}/checkpoints": {
+      "post": {
+        "summary": "Create Checkpoint",
+        "operationId": "create_checkpoint_api_runs__run_id__checkpoints_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckpointCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointContract"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Checkpoints",
+        "operationId": "list_checkpoints_api_runs__run_id__checkpoints_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CheckpointContract"
+                  },
+                  "title": "Response List Checkpoints Api Runs  Run Id  Checkpoints Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkpoints/{checkpoint_id}": {
+      "get": {
+        "summary": "Get Checkpoint",
+        "operationId": "get_checkpoint_api_checkpoints__checkpoint_id__get",
+        "parameters": [
+          {
+            "name": "checkpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Checkpoint Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointContract"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkpoints/{checkpoint_id}/restore": {
+      "post": {
+        "summary": "Restore Checkpoint",
+        "operationId": "restore_checkpoint_api_checkpoints__checkpoint_id__restore_post",
+        "parameters": [
+          {
+            "name": "checkpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Checkpoint Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckpointRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointRestored"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/snapshot": {
       "get": {
         "summary": "Snapshot",
@@ -1462,6 +1640,367 @@
           "manifest"
         ],
         "title": "CapabilityManifestView"
+      },
+      "CheckpointContract": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "composite-checkpoint-v1",
+            "title": "Schema Version",
+            "default": "composite-checkpoint-v1"
+          },
+          "checkpoint_id": {
+            "type": "string",
+            "pattern": "^checkpoint_[0-9a-f]{32}$",
+            "title": "Checkpoint Id"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id"
+          },
+          "request_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Request Fingerprint"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Label",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "task_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Pack"
+          },
+          "baseline_identity": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Baseline Identity"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CheckpointSourceBoundary"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceSnapshot"
+          },
+          "state_refs": {
+            "$ref": "#/components/schemas/CheckpointStateRefs"
+          },
+          "effects": {
+            "$ref": "#/components/schemas/CheckpointEffectBoundary"
+          },
+          "restore_policy": {
+            "type": "string",
+            "const": "fork_only",
+            "title": "Restore Policy",
+            "default": "fork_only"
+          },
+          "context_policy": {
+            "type": "string",
+            "const": "replan_from_verified_facts",
+            "title": "Context Policy",
+            "default": "replan_from_verified_facts"
+          },
+          "unknown_effect_policy": {
+            "type": "string",
+            "const": "block",
+            "title": "Unknown Effect Policy",
+            "default": "block"
+          }
+        },
+        "type": "object",
+        "required": [
+          "checkpoint_id",
+          "request_id",
+          "request_fingerprint",
+          "task_pack",
+          "baseline_identity",
+          "source",
+          "workspace",
+          "state_refs",
+          "effects"
+        ],
+        "title": "CheckpointContract"
+      },
+      "CheckpointCreateRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "CheckpointCreateRequest"
+      },
+      "CheckpointEffect": {
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Operation Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Tool Name"
+          },
+          "terminal_state": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed",
+              "unknown"
+            ],
+            "title": "Terminal State"
+          },
+          "side_effect_level": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Side Effect Level"
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "read_only",
+              "workspace_restored",
+              "no_effect",
+              "requires_reconciliation",
+              "irreversible",
+              "unknown"
+            ],
+            "title": "Disposition"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation_id",
+          "tool_name",
+          "terminal_state",
+          "side_effect_level",
+          "disposition"
+        ],
+        "title": "CheckpointEffect"
+      },
+      "CheckpointEffectBoundary": {
+        "properties": {
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/CheckpointEffect"
+            },
+            "type": "array",
+            "title": "Effects",
+            "default": []
+          },
+          "restore_blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Restore Blockers",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "CheckpointEffectBoundary"
+      },
+      "CheckpointRestoreRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "CheckpointRestoreRequest"
+      },
+      "CheckpointRestored": {
+        "properties": {
+          "checkpoint_id": {
+            "type": "string",
+            "title": "Checkpoint Id"
+          },
+          "source_run_id": {
+            "type": "string",
+            "title": "Source Run Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "queued",
+            "title": "Status",
+            "default": "queued"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "checkpoint_id",
+          "source_run_id",
+          "run_id",
+          "task_id"
+        ],
+        "title": "CheckpointRestored"
+      },
+      "CheckpointSourceBoundary": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Event Id"
+          },
+          "event_cursor": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Event Cursor"
+          },
+          "event_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Event Count"
+          },
+          "event_prefix_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Event Prefix Sha256"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Id"
+          },
+          "phase": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Phase"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "task_id",
+          "event_id",
+          "event_cursor",
+          "event_count",
+          "event_prefix_sha256",
+          "phase"
+        ],
+        "title": "CheckpointSourceBoundary"
+      },
+      "CheckpointStateRefs": {
+        "properties": {
+          "run_created_event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Run Created Event Id"
+          },
+          "assignment_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Event Id"
+          },
+          "local_plan_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Plan Event Id"
+          },
+          "context_manifest_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Manifest Event Id"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/VerifiedArtifactRef"
+            },
+            "type": "array",
+            "title": "Artifacts",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_created_event_id"
+        ],
+        "title": "CheckpointStateRefs"
       },
       "ContextView": {
         "properties": {
@@ -3745,6 +4284,49 @@
         ],
         "title": "ValidationError"
       },
+      "VerifiedArtifactRef": {
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Artifact Id"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "source_event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Source Event Id"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "kind",
+          "source_event_id",
+          "size",
+          "sha256"
+        ],
+        "title": "VerifiedArtifactRef"
+      },
       "WorkClaimView": {
         "properties": {
           "claim_key": {
@@ -3789,6 +4371,84 @@
           "updated_at"
         ],
         "title": "WorkClaimView"
+      },
+      "WorkspaceFileEntry": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Path"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "title": "WorkspaceFileEntry"
+      },
+      "WorkspaceSnapshot": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "workspace-snapshot-v1",
+            "title": "Schema Version",
+            "default": "workspace-snapshot-v1"
+          },
+          "object_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Object Id"
+          },
+          "archive_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Archive Sha256"
+          },
+          "manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Sha256"
+          },
+          "file_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "File Count"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Bytes"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceFileEntry"
+            },
+            "type": "array",
+            "title": "Files",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "archive_sha256",
+          "manifest_sha256",
+          "file_count",
+          "total_bytes"
+        ],
+        "title": "WorkspaceSnapshot"
       }
     }
   }

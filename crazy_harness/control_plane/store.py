@@ -453,6 +453,7 @@ class SQLiteEventStore:
         owner_id: str,
         ttl_seconds: int,
         now: datetime | None = None,
+        run_id: str | None = None,
     ) -> dict[str, int] | None:
         """Atomically claim every key or none; tokens fence stale owners."""
 
@@ -468,6 +469,16 @@ class SQLiteEventStore:
         tokens: dict[str, int] = {}
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if run_id is not None:
+                run = self._load_projection(connection, "run", run_id)
+                barrier_deadline = (
+                    datetime.fromisoformat(str(run["checkpoint_barrier_expires_at"]))
+                    if run is not None and run.get("checkpoint_barrier_expires_at")
+                    else None
+                )
+                if barrier_deadline is not None and barrier_deadline > current:
+                    connection.rollback()
+                    return None
             rows: dict[str, sqlite3.Row | None] = {}
             for key in keys:
                 row = connection.execute(
@@ -1107,6 +1118,15 @@ class SQLiteEventStore:
                 )
             elif event.type == "run.paused" and not run_terminal and not run_cancelling:
                 run["status"] = "paused"
+            elif event.type == "checkpoint.barrier.acquired":
+                run["checkpoint_barrier_id"] = event.payload.get("barrier_id")
+                run["checkpoint_barrier_expires_at"] = event.payload.get("expires_at")
+            elif (
+                event.type == "checkpoint.barrier.released"
+                and run.get("checkpoint_barrier_id") == event.payload.get("barrier_id")
+            ):
+                run["checkpoint_barrier_id"] = None
+                run["checkpoint_barrier_expires_at"] = None
             elif event.type == "run.cancel.requested" and not run_terminal:
                 run["status"] = "cancelling"
                 run["phase"] = "cancelling"

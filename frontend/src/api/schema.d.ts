@@ -193,6 +193,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/checkpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Checkpoints */
+        get: operations["list_checkpoints_api_runs__run_id__checkpoints_get"];
+        put?: never;
+        /** Create Checkpoint */
+        post: operations["create_checkpoint_api_runs__run_id__checkpoints_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/checkpoints/{checkpoint_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Checkpoint */
+        get: operations["get_checkpoint_api_checkpoints__checkpoint_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/checkpoints/{checkpoint_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Checkpoint */
+        post: operations["restore_checkpoint_api_checkpoints__checkpoint_id__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/snapshot": {
         parameters: {
             query?: never;
@@ -593,6 +645,158 @@ export interface components {
             };
         } & {
             [key: string]: unknown;
+        };
+        /** CheckpointContract */
+        CheckpointContract: {
+            /**
+             * Schema Version
+             * @default composite-checkpoint-v1
+             * @constant
+             */
+            schema_version: "composite-checkpoint-v1";
+            /** Checkpoint Id */
+            checkpoint_id: string;
+            /** Request Id */
+            request_id: string;
+            /** Request Fingerprint */
+            request_fingerprint: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Task Pack */
+            task_pack: string;
+            /** Baseline Identity */
+            baseline_identity: string;
+            source: components["schemas"]["CheckpointSourceBoundary"];
+            workspace: components["schemas"]["WorkspaceSnapshot"];
+            state_refs: components["schemas"]["CheckpointStateRefs"];
+            effects: components["schemas"]["CheckpointEffectBoundary"];
+            /**
+             * Restore Policy
+             * @default fork_only
+             * @constant
+             */
+            restore_policy: "fork_only";
+            /**
+             * Context Policy
+             * @default replan_from_verified_facts
+             * @constant
+             */
+            context_policy: "replan_from_verified_facts";
+            /**
+             * Unknown Effect Policy
+             * @default block
+             * @constant
+             */
+            unknown_effect_policy: "block";
+        };
+        /** CheckpointCreateRequest */
+        CheckpointCreateRequest: {
+            /** Request Id */
+            request_id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /** CheckpointEffect */
+        CheckpointEffect: {
+            /** Operation Id */
+            operation_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /**
+             * Terminal State
+             * @enum {string}
+             */
+            terminal_state: "completed" | "failed" | "unknown";
+            /** Side Effect Level */
+            side_effect_level: string;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "read_only" | "workspace_restored" | "no_effect" | "requires_reconciliation" | "irreversible" | "unknown";
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+        };
+        /** CheckpointEffectBoundary */
+        CheckpointEffectBoundary: {
+            /**
+             * Effects
+             * @default []
+             */
+            effects: components["schemas"]["CheckpointEffect"][];
+            /**
+             * Restore Blockers
+             * @default []
+             */
+            restore_blockers: string[];
+        };
+        /** CheckpointRestoreRequest */
+        CheckpointRestoreRequest: {
+            /** Request Id */
+            request_id: string;
+        };
+        /** CheckpointRestored */
+        CheckpointRestored: {
+            /** Checkpoint Id */
+            checkpoint_id: string;
+            /** Source Run Id */
+            source_run_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+        };
+        /** CheckpointSourceBoundary */
+        CheckpointSourceBoundary: {
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Event Id */
+            event_id: string;
+            /** Event Cursor */
+            event_cursor: number;
+            /** Event Count */
+            event_count: number;
+            /** Event Prefix Sha256 */
+            event_prefix_sha256: string;
+            /** Turn Id */
+            turn_id?: string | null;
+            /** Phase */
+            phase: string;
+        };
+        /** CheckpointStateRefs */
+        CheckpointStateRefs: {
+            /** Run Created Event Id */
+            run_created_event_id: string;
+            /** Assignment Event Id */
+            assignment_event_id?: string | null;
+            /** Local Plan Event Id */
+            local_plan_event_id?: string | null;
+            /** Context Manifest Event Id */
+            context_manifest_event_id?: string | null;
+            /**
+             * Artifacts
+             * @default []
+             */
+            artifacts: components["schemas"]["VerifiedArtifactRef"][];
         };
         /** ContextView */
         ContextView: {
@@ -1482,6 +1686,24 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** VerifiedArtifactRef */
+        VerifiedArtifactRef: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Source Event Id */
+            source_event_id: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
+        };
         /** WorkClaimView */
         WorkClaimView: {
             /** Claim Key */
@@ -1500,6 +1722,39 @@ export interface components {
             updated_at: string;
         } & {
             [key: string]: unknown;
+        };
+        /** WorkspaceFileEntry */
+        WorkspaceFileEntry: {
+            /** Path */
+            path: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
+        };
+        /** WorkspaceSnapshot */
+        WorkspaceSnapshot: {
+            /**
+             * Schema Version
+             * @default workspace-snapshot-v1
+             * @constant
+             */
+            schema_version: "workspace-snapshot-v1";
+            /** Object Id */
+            object_id: string;
+            /** Archive Sha256 */
+            archive_sha256: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** File Count */
+            file_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /**
+             * Files
+             * @default []
+             */
+            files: components["schemas"]["WorkspaceFileEntry"][];
         };
     };
     responses: never;
@@ -1927,6 +2182,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CancelResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_checkpoints_api_runs__run_id__checkpoints_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointContract"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_checkpoint_api_runs__run_id__checkpoints_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckpointCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_checkpoint_api_checkpoints__checkpoint_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                checkpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_checkpoint_api_checkpoints__checkpoint_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                checkpoint_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckpointRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointRestored"];
                 };
             };
             /** @description Validation Error */

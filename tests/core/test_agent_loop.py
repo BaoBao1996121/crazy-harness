@@ -23,7 +23,11 @@ def test_agent_loop_calls_tool_and_records_result(tmp_path):
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     tools = ToolRegistry()
     tools.register(
-        ToolSpec(name="echo", description="echo text"),
+        ToolSpec(
+            name="echo",
+            description="echo text",
+            side_effect_level="workspace_write",
+        ),
         lambda args: ToolResult(name="echo", status="ok", output=args["text"]),
     )
     model = FakeModelProvider(
@@ -56,6 +60,8 @@ def test_agent_loop_calls_tool_and_records_result(tmp_path):
     assert "agent.command.validated" in event_types
     assert "tool.completed" in event_types
     assert event_types[-1] == "agent.stopped"
+    started = next(event for event in event_log.read_all() if event.type == "operation.started")
+    assert started.payload["side_effect_level"] == "workspace_write"
 
 
 def test_agent_loop_persists_sanitized_model_envelope_not_raw_reasoning(tmp_path):
