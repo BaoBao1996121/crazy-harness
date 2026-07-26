@@ -29,6 +29,7 @@ Crazy 是一个不依赖现有 Agent 框架接管主循环、手工实现的事�
 - v0.7 在线 Team 模型治理：Assignment/Peer child AgentRun 可独立路由 DeepSeek；SQLite 在 HTTP 前原子预约共享 Token、费用和并发额度，持久记录 Attempt、Unknown、usage 核销与估算成本
 - v0.8 公平配对评测：同一 Repo Bug、同完整任务 Input Hash、同每臂总预算，分别运行 Single 与 Team；Live Pair 要求同模型及逐调用证明，Scripted Pair 明示两臂使用不同确定性脚本并固化脚本清单 Hash。Prepare -> Commit -> Release、Eval Create fencing 与浏览器待确认请求恢复共同防止重复 Pair，隔离工作区由独立机器 Scorer 复验
 - v0.8e 持久 Eval Campaign：预注册多个 Pair Trial，限制父级总预算与并发窗口，保存失败样本并做确定性配对聚合；支持取消、崩溃恢复、容量等待/Nudge、Scorer 版本失败关闭和 Control Room Trial 下钻
+- v0.9 Composite Checkpoint：在静止边界冻结内容寻址 Workspace、Event prefix、Harness 状态引用、Artifact Hash 与 Effect 边界；默认 Fork Restore 新 Run，旧历史不改写。恢复工作区后或恢复提交后崩溃，均可用同一请求跨进程收敛到唯一 Run 与唯一持久 Mailbox Delivery
 - DispatchContext 将执行权与 CancellationToken 带入 Handler；旧 Worker 不能写可信运行事实、提交正式 Kernel 事实或 Ack，排队/在途 Run 均支持幂等协作式取消
 - Coordinator / Scout / Scout Backup / Builder / Reviewer 按能力动态委派，并支持受控一跳 A2A 对账
 - Team Worker 不再是直接伪造结果的事件处理器：Scripted Model 可提供可重放动作，DeepSeek 可提供在线动作；两种模式都为每个 Assignment/Peer 创建独立 child AgentRun，并由与单 Agent 共用的 canonical AgentLoop 逐轮推进。正式结果必须匹配持久 Contract、可回溯到 Seed/可信 Observation 的 Model/Command/Gate/Submission 链，以及以 `operation.completed` 收尾的合同 Tool Evidence
@@ -102,6 +103,8 @@ python -m crazy_harness.control_plane --port 8768 --data-dir runs\control_plane_
 
 多轮 Campaign：点击顶部“多轮评测 / Campaign”，选择 Trial 数量与 Pair 并发窗口。父实验会持久保存每个 Trial 的确定性身份、预算、Pair 报告 Hash、质量/成功/成本/耗时指标和推荐理由；点击任一 Trial 可继续下钻 Pair 与两条 Run Timeline。Scripted Campaign 只能否决明显退化，不能据此晋升 Team。
 
+Composite Checkpoint：打开一个 `repo-maintainer` 单 Agent Run，点击顶部“检查点”，在完整 Turn 边界创建命名检查点。面板会展示来源阶段、Turn、Workspace 大小、Artifact 和副作用分类；“派生新 Run”先恢复并校验工作区，再发布持久任务。原 Run 保持不变，旧模型隐藏推理和完整 Context 不会被复制。
+
 Tool Search 大目录演示（持久 Mailbox -> Scheduler -> AgentLoop -> 搜索 -> 下一轮 Schema 披露 -> 原生工具调用）：
 
 ```powershell
@@ -138,13 +141,14 @@ python -m pytest -q -m llm tests\e2e\test_resident_repo_maintainer_llm.py tests\
 3. [`docs/DURABLE_SUPERVISOR_WALKTHROUGH.md`](docs/DURABLE_SUPERVISOR_WALKTHROUGH.md)：动态编排、PlanPatch 信任边界、Lease 与故障转移。
 4. [`docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md`](docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md)：Team 在线模型路由、持久预算、重试隔离、Unknown 与成本核销。
 5. [`docs/SINGLE_VS_TEAM_EVAL_DESIGN.md`](docs/SINGLE_VS_TEAM_EVAL_DESIGN.md)：公平配对契约、独立 Scorer、Trace 指标与保守推荐策略。
-6. [`docs/ARCHITECTURE_WALKTHROUGH.md`](docs/ARCHITECTURE_WALKTHROUGH.md)：静态架构、单 Agent 与 Teamwork 运行路径。
-7. [`docs/HARNESS_CORE_ESSENTIALS.md`](docs/HARNESS_CORE_ESSENTIALS.md)：Agent Loop、Context、Memory、A2A 与 Eval 核心机制。
-8. [`docs/EVIDENCE_RESEARCH_TASKPACK.md`](docs/EVIDENCE_RESEARCH_TASKPACK.md)：第二个 Golden Task 如何复用同一 Runtime，并用浏览器证据和引用门禁准出。
-9. [`docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md`](docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md)：Skill 三层披露、Scope/信任边界与真实 Trace。
-10. [`docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md`](docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md)：MCP 延迟发现、Tool Search 与执行边界。
-11. [`docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md`](docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md)：课程版真实代码、测试与 Trace 手册。
-12. [`labs/16h_sprint/README.md`](labs/16h_sprint/README.md)：八个学习块、known-good、Bug Card 与伪代码模板。
+6. [`docs/COMPOSITE_CHECKPOINT_DESIGN.md`](docs/COMPOSITE_CHECKPOINT_DESIGN.md)：Workspace、状态引用、Artifact 与 Effect 如何组成可校验检查点，以及 Fork Restore 如何跨崩溃收敛。
+7. [`docs/ARCHITECTURE_WALKTHROUGH.md`](docs/ARCHITECTURE_WALKTHROUGH.md)：静态架构、单 Agent 与 Teamwork 运行路径。
+8. [`docs/HARNESS_CORE_ESSENTIALS.md`](docs/HARNESS_CORE_ESSENTIALS.md)：Agent Loop、Context、Memory、A2A 与 Eval 核心机制。
+9. [`docs/EVIDENCE_RESEARCH_TASKPACK.md`](docs/EVIDENCE_RESEARCH_TASKPACK.md)：第二个 Golden Task 如何复用同一 Runtime，并用浏览器证据和引用门禁准出。
+10. [`docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md`](docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md)：Skill 三层披露、Scope/信任边界与真实 Trace。
+11. [`docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md`](docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md)：MCP 延迟发现、Tool Search 与执行边界。
+12. [`docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md`](docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md)：课程版真实代码、测试与 Trace 手册。
+13. [`labs/16h_sprint/README.md`](labs/16h_sprint/README.md)：八个学习块、known-good、Bug Card 与伪代码模板。
 
 回来后的第一条学习命令：
 
@@ -164,6 +168,7 @@ python labs\16h_sprint\block_01_agent_loop\run_demo.py
 - MCP 当前只完成官方 memory transport 的真实协议纵切；外部 stdio/Streamable HTTP 长连接、OAuth、通知与重连仍未完成。
 - Skill 当前完成可信文件源、Scope 覆盖、按需正文激活和持久恢复；千级目录检索、资源正文按需读取、文件监听热更新、真实 DeepSeek 触发质量与受控 Skill Evolution 尚未完成。
 - Team v0.7 已把 DeepSeek 路由和持久模型治理接入 Assignment/Peer child AgentRun；v0.8 已完成同题、同完整任务 Hash、同每臂总预算的本地配对、Prepare/Commit/Create fencing 恢复、独立 Scorer、持久报告与双语 UI。Live Pair 才要求同完整推理配置与逐调用证明；Scripted Pair 是不同角色脚本的机制对照，不冒充同模型。缺失调用证明的终态 Pair 会持久化为证据无效报告，而不是停留在 `running`。本机没有 `DEEPSEEK_API_KEY`，真实 DeepSeek 多 Trial、方差/置信度、跨 Pair 统计推荐尚未完成。跨 Scheduler 共享 Global Slot、Remote A2A Adapter 和分布式公平性也仍未完成。第三方模型 API 无法提供端到端 exactly-once；ReadTimeout 等不确定窗口进入 `unknown` 并悲观保留额度。外部工具副作用仍需 OperationLedger、业务幂等键或对账，Fencing 不能撤回已经发出的请求。
+- Composite Checkpoint v0.9 仅支持本地 `repo-maintainer` 单 Agent disposable workspace。它能恢复 Harness 控制的文件和可信引用，不能自动撤销付款、发信、生产发布或其他外部 Effect；不可逆、需对账和 Unknown Effect 默认阻止自动 Restore。Team 多工作区、Git/容器快照、补偿 Adapter、自动逐 Turn 保留与对象 GC 尚未实现。
 
 ## 参与项目
 

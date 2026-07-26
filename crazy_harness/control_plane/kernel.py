@@ -98,6 +98,8 @@ class FaultController:
         "before_mailbox_ack",
         "during_command_commit",
         "after_command_finalized",
+        "after_restore_workspace",
+        "after_restore_committed",
     }
 
     def __init__(self) -> None:

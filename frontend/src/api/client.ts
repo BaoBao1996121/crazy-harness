@@ -17,6 +17,10 @@ export type EvalCampaignDraft = Omit<EvalCampaignRequest, "request_id">;
 export type EvalCampaignCreated = components["schemas"]["EvalCampaignCreated"];
 export type EvalCampaignReport = components["schemas"]["EvalCampaignReport"];
 export type CampaignTrialSummary = components["schemas"]["CampaignTrialSummary"];
+export type Checkpoint = components["schemas"]["CheckpointContract"];
+export type CheckpointCreateRequest = components["schemas"]["CheckpointCreateRequest"];
+export type CheckpointRestoreRequest = components["schemas"]["CheckpointRestoreRequest"];
+export type CheckpointRestored = components["schemas"]["CheckpointRestored"];
 export type FaultPoint =
   | "after_candidate_persisted"
   | "after_model_persisted"
@@ -102,6 +106,20 @@ export const api = {
     request<{ run_id: string; steps: number }>(`/api/runs/${runId}/drain`, { method: "POST" }),
   cancelRun: (runId: string) =>
     request<CancelResult>(`/api/runs/${runId}/cancel`, { method: "POST" }),
+  createCheckpoint: (runId: string, body: CheckpointCreateRequest) =>
+    request<Checkpoint>(`/api/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listCheckpoints: (runId: string) =>
+    request<Checkpoint[]>(`/api/runs/${encodeURIComponent(runId)}/checkpoints`),
+  checkpoint: (checkpointId: string) =>
+    request<Checkpoint>(`/api/checkpoints/${encodeURIComponent(checkpointId)}`),
+  restoreCheckpoint: (checkpointId: string, body: CheckpointRestoreRequest) =>
+    request<CheckpointRestored>(
+      `/api/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   snapshot: (runId?: string) =>
     request<Snapshot>(`/api/snapshot${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
   events: (runId: string, after = 0) =>

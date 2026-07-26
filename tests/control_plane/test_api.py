@@ -12,7 +12,7 @@ def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json()["version"] == "v0.8.0-dev"
+    assert response.json()["version"] == "v0.9.0-dev"
 
 
 def test_http_tells_client_when_a_failed_pair_requires_a_new_request_id(
@@ -381,6 +381,46 @@ def test_http_can_start_and_drain_the_single_agent_repo_maintainer(tmp_path):
         assert drained.status_code == 200
         assert snapshot["run"]["status"] == "succeeded"
         assert snapshot["contexts"][-1]["agent_id"] == "generalist"
+
+
+def test_http_can_create_inspect_and_fork_restore_a_checkpoint(tmp_path):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={
+                "title": "Checkpoint repair",
+                "brief": "Repair and resume from verified state.",
+                "execution_mode": "single",
+                "model_mode": "scripted",
+                "task_pack": "repo-maintainer",
+            },
+        ).json()
+        for _ in range(4):
+            assert runtime.scheduler.run_once() is True
+
+        checkpoint = client.post(
+            f"/api/runs/{created['run_id']}/checkpoints",
+            json={"request_id": "api-checkpoint-1", "label": "修改后"},
+        )
+        checkpoint_id = checkpoint.json()["checkpoint_id"]
+        listed = client.get(f"/api/runs/{created['run_id']}/checkpoints")
+        inspected = client.get(f"/api/checkpoints/{checkpoint_id}")
+        restored = client.post(
+            f"/api/checkpoints/{checkpoint_id}/restore",
+            json={"request_id": "api-restore-1"},
+        )
+        restored_run_id = restored.json()["run_id"]
+        drained = client.post(f"/api/runs/{restored_run_id}/drain")
+        snapshot = client.get(f"/api/snapshot?run_id={restored_run_id}").json()
+
+    assert checkpoint.status_code == 201
+    assert listed.status_code == inspected.status_code == restored.status_code == 200
+    assert listed.json() == [inspected.json()]
+    assert restored.json()["source_run_id"] == created["run_id"]
+    assert drained.status_code == 200
+    assert snapshot["run"]["status"] == "succeeded"
 
 
 def test_http_rejects_live_deepseek_without_a_key(tmp_path, monkeypatch):

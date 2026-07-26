@@ -8,12 +8,18 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from crazy_harness.control_plane.checkpoints import (
+    CheckpointCreateRequest,
+    CheckpointRestored,
+    CheckpointRestoreRequest,
+    CheckpointService,
+)
 from crazy_harness.control_plane.context import PersistentContextCompiler
 from crazy_harness.control_plane.eval_campaigns import (
     EvalCampaignCreated,
@@ -58,6 +64,7 @@ from crazy_harness.core.a2a.orchestration import (
 )
 from crazy_harness.core.agents import AgentLoop, AssignmentContract
 from crazy_harness.core.artifacts import ArtifactStore
+from crazy_harness.core.checkpoints import CheckpointContract, WorkspaceSnapshotStore
 from crazy_harness.core.events import Event
 from crazy_harness.core.models import (
     DeepSeekOpenAIProvider,
@@ -689,6 +696,7 @@ class ResidentScheduler:
                         owner_id=self._owner_id,
                         ttl_seconds=self._work_claim_seconds,
                         now=claimed_at,
+                        run_id=delivery.event.run_id,
                     )
                     if claims is not None:
                         claim_deadline = claimed_at + timedelta(
@@ -1219,6 +1227,14 @@ class ResidentRuntime:
         self.campaign_service = EvalCampaignService(self.store)
         self.model_call_authority = PersistentModelCallAuthority(self.store)
         self.artifacts = ArtifactStore(self.data_dir / "artifacts")
+        self.checkpoint_snapshots = WorkspaceSnapshotStore(
+            self.data_dir / "checkpoint_objects"
+        )
+        self.checkpoints = CheckpointService(
+            self.store,
+            self.checkpoint_snapshots,
+            artifact_root=self.artifacts.root,
+        )
         self.faults = FaultController()
         self.kernel = ControlKernel(self.store, fault_controller=self.faults)
         self.context = PersistentContextCompiler(self.store, self.artifacts)
@@ -1382,6 +1398,185 @@ class ResidentRuntime:
             event = self._scheduler_failure_buffer[0]
             self.store.append(event)
             self._scheduler_failure_buffer.popleft()
+
+    def create_checkpoint(
+        self,
+        run_id: str,
+        request: CheckpointCreateRequest,
+    ) -> CheckpointContract:
+        """Capture one verified, quiescent Run boundary as a composite checkpoint."""
+
+        identity = next(
+            (
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            ),
+            None,
+        )
+        if identity is None:
+            raise KeyError(f"unknown run: {run_id}")
+        barrier_id = f"checkpoint_barrier_{uuid4().hex}"
+        checkpoint_id = self.checkpoints.checkpoint_id(run_id, request.request_id)
+        acquired = self.store.append(
+            Event(
+                run_id=identity.run_id,
+                task_id=identity.task_id,
+                type="checkpoint.barrier.acquired",
+                source="runtime.checkpoint",
+                payload={
+                    "barrier_id": barrier_id,
+                    "checkpoint_id": checkpoint_id,
+                    "expires_at": (
+                        datetime.now(timezone.utc) + timedelta(minutes=5)
+                    ).isoformat(),
+                },
+                causation_id=identity.id,
+            )
+        )
+        try:
+            self._wait_for_checkpoint_quiescence(run_id, timeout_seconds=30)
+            return self.checkpoints.create(run_id, request)
+        finally:
+            self.store.append(
+                Event(
+                    run_id=identity.run_id,
+                    task_id=identity.task_id,
+                    type="checkpoint.barrier.released",
+                    source="runtime.checkpoint",
+                    payload={
+                        "barrier_id": barrier_id,
+                        "checkpoint_id": checkpoint_id,
+                    },
+                    causation_id=acquired.id,
+                )
+            )
+
+    def _wait_for_checkpoint_quiescence(
+        self,
+        run_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        deadline = monotonic() + timeout_seconds
+        while True:
+            now = datetime.now(timezone.utc)
+            active = [
+                claim
+                for claim in self.store.list_work_claims(state="active")
+                if str(claim["claim_key"]).startswith("agent-run:")
+                and run_id in str(claim["claim_key"])
+                and datetime.fromisoformat(str(claim["expires_at"])) > now
+            ]
+            if not active:
+                return
+            if monotonic() >= deadline:
+                raise TimeoutError(
+                    f"run did not reach checkpoint quiescence: {run_id}"
+                )
+            sleep(0.02)
+
+    def restore_checkpoint(
+        self,
+        checkpoint_id: str,
+        request: CheckpointRestoreRequest,
+    ) -> CheckpointRestored:
+        """Fork a new single-Agent Run from verified checkpoint facts."""
+
+        contract = self.checkpoints.validate_restore(checkpoint_id)
+        source_events = self.store.read_all(run_id=contract.source.run_id)
+        source_created = next(
+            (event for event in source_events if event.type == "run.created"),
+            None,
+        )
+        source_assignment = next(
+            (event for event in source_events if event.id == contract.state_refs.assignment_event_id),
+            None,
+        )
+        if source_created is None or source_assignment is None:
+            raise RuntimeError("checkpoint has no restorable Run or Assignment")
+        if source_created.payload.get("execution_mode") != "single":
+            raise ValueError("checkpoint MVP restores single-Agent Runs only")
+        if contract.task_pack != self.repo_maintainer_pack.task_pack_id:
+            raise ValueError("checkpoint MVP restores repo-maintainer Runs only")
+
+        restore_key = f"{checkpoint_id}:{request.request_id}"
+        identity = self.checkpoint_restore_identity(checkpoint_id, request.request_id)
+        workspace = self.data_dir / "workspaces" / identity.run_id
+        if workspace.exists():
+            restored_snapshot = self.checkpoint_snapshots.create(workspace)
+            if restored_snapshot.object_id != contract.workspace.object_id:
+                raise RuntimeError("existing restore workspace does not match checkpoint")
+        else:
+            self.checkpoint_snapshots.restore(contract.workspace, workspace)
+        self.faults.trip("after_restore_workspace")
+
+        task_request = TaskRequest(
+            title=f"{source_created.payload['title']} (checkpoint restore)",
+            brief=str(source_created.payload["brief"]),
+            model_mode=str(source_created.payload["model_mode"]),
+            execution_mode="single",
+            task_pack=contract.task_pack,
+            model_budget=ModelBudgetConfig.model_validate(
+                source_created.payload.get("model_budget", {})
+            ),
+        )
+        assignment_contract = AssignmentContract.model_validate(
+            source_assignment.payload["contract"]
+        )
+        self._prepare_single_task(
+            task_request,
+            identity,
+            restore_contract=contract,
+            assignment_contract=assignment_contract,
+            source_run_created=source_created,
+        )
+        restored_created = next(
+            event
+            for event in self.store.read_all(run_id=identity.run_id)
+            if event.type == "run.created"
+        )
+        self._append_deterministic(
+            restored_created,
+            f"checkpoint-restore-committed:{restore_key}",
+            "checkpoint.restore.committed",
+            {
+                "request_id": request.request_id,
+                "checkpoint_id": checkpoint_id,
+                "source_run_id": contract.source.run_id,
+                "source_event_id": contract.source.event_id,
+                "source_turn_id": contract.source.turn_id,
+                "source_phase": contract.source.phase,
+                "workspace_object_id": contract.workspace.object_id,
+                "state_refs": contract.state_refs.model_dump(mode="json"),
+                "effects": contract.effects.model_dump(mode="json"),
+                "context_policy": contract.context_policy,
+                "planning_directive": "Replan from verified checkpoint facts; do not assume hidden prior reasoning.",
+                "full_model_context_copied": False,
+            },
+            source="runtime.checkpoint",
+        )
+        self.faults.trip("after_restore_committed")
+        self._release_prepared_task("single", identity)
+        return CheckpointRestored(
+            checkpoint_id=checkpoint_id,
+            source_run_id=contract.source.run_id,
+            run_id=identity.run_id,
+            task_id=identity.task_id,
+        )
+
+    @staticmethod
+    def checkpoint_restore_identity(
+        checkpoint_id: str,
+        request_id: str,
+    ) -> EvalRunIdentity:
+        """Derive the stable fork identity used by restore retries."""
+
+        restore_key = f"{checkpoint_id}:{request_id}"
+        return EvalRunIdentity(
+            run_id=f"run_{uuid5(NAMESPACE_URL, f'crazy:checkpoint-restore-run:{restore_key}').hex[:12]}",
+            task_id=f"task_{uuid5(NAMESPACE_URL, f'crazy:checkpoint-restore-task:{restore_key}').hex[:12]}",
+        )
 
     def submit_task(self, request: TaskRequest) -> RunCreated:
         if request.execution_mode == "single":
@@ -1899,7 +2094,7 @@ class ResidentRuntime:
                     "model_budget": request.model_budget.model_dump(mode="json"),
                     "model_profile": model_profile,
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.8.0-dev",
+                    "behavior_version": "v0.9.0-dev",
                     **task_metadata,
                 },
             )
@@ -1936,6 +2131,9 @@ class ResidentRuntime:
         identity: EvalRunIdentity,
         *,
         hold_for_paired_commit: bool = False,
+        restore_contract: CheckpointContract | None = None,
+        assignment_contract: AssignmentContract | None = None,
+        source_run_created: Event | None = None,
     ) -> RunCreated:
         task_pack_id = request.task_pack or self.repo_maintainer_pack.task_pack_id
         pack = self.task_packs.get(task_pack_id)
@@ -1947,13 +2145,32 @@ class ResidentRuntime:
         task_id = identity.task_id
         prepared = pack.prepare(run_id)
         model_profile = self._requested_model_profile(request, task_pack_id)
-        case_metadata = (
-            pack.case_metadata(prepared)
-            if isinstance(pack, RepoMaintainerTaskPack)
-            else {}
-        )
+        if restore_contract is not None:
+            if not isinstance(pack, RepoMaintainerTaskPack) or source_run_created is None:
+                raise ValueError("checkpoint restore requires repo-maintainer source metadata")
+            if pack.workspace_hash(prepared.workspace) != restore_contract.workspace.object_id:
+                raise RuntimeError("restored workspace hash does not match checkpoint")
+            if pack.workspace_hash(prepared.baseline) != pack.fixture_hash():
+                raise RuntimeError("restored Run baseline does not match trusted fixture")
+            case_metadata = {
+                "case_id": str(source_run_created.payload.get("case_id", pack.case_id)),
+                "fixture_hash": str(
+                    source_run_created.payload.get("fixture_hash", pack.fixture_hash())
+                ),
+                "scorer_version": str(
+                    source_run_created.payload.get("scorer_version", pack.scorer_version)
+                ),
+                "input_hash": str(source_run_created.payload.get("input_hash", "restored")),
+                "restored_workspace_hash": restore_contract.workspace.object_id,
+            }
+        else:
+            case_metadata = (
+                pack.case_metadata(prepared)
+                if isinstance(pack, RepoMaintainerTaskPack)
+                else {}
+            )
         fixture_hash = case_metadata.get("fixture_hash")
-        if fixture_hash is not None:
+        if fixture_hash is not None and restore_contract is None:
             case_metadata["input_hash"] = paired_input_hash(
                 PairedEvalRequest(
                     request_id="runtime-prepare",
@@ -1986,12 +2203,20 @@ class ResidentRuntime:
                         if hasattr(prepared, "baseline")
                         else prepared.workspace
                     ),
-                    "behavior_version": "v0.8.0-dev",
+                    "behavior_version": "v0.9.0-dev",
+                    **(
+                        {
+                            "restored_from_checkpoint_id": restore_contract.checkpoint_id,
+                            "restored_from_run_id": restore_contract.source.run_id,
+                        }
+                        if restore_contract is not None
+                        else {}
+                    ),
                     **case_metadata,
                 },
             )
         )
-        contract = pack.assignment_contract()
+        contract = assignment_contract or pack.assignment_contract()
         self.store.append(
             Event(
                 id=str(
