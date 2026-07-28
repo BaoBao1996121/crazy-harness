@@ -277,3 +277,11 @@
 - **边界**：本机仍未配置 `DEEPSEEK_API_KEY`，Docker CLI/Engine 仍不可用，因此 Live LLM 与真正容器沙箱保持外部门槛；默认分支另有一个 `js-yaml <4.3.0` 的开发依赖 High 告警，将在独立安全 PR 处理，不夹带进 Checkpoint PR。
 
 设计审查：5/5 通过。外部依赖与跨平台兼容由 CI 验证；耗时和测试数字均为实测；本地与远端失败路径无新增红灯；5 分钟/2,000 文件/100 MB 仍是明确的初始阈值；发布范围没有越出单 Agent Composite Checkpoint MVP。
+
+### 22:42 前端生成工具链 High 漏洞清零
+
+- **时间**：2026-07-26 22:42:00 +08:00。
+- **动作**：在独立 `fix/js-yaml-cve-2026-59869` 分支处理 Dependabot #6。保留顶层 `openapi-typescript 7.13.0`，用 npm overrides 将其归档 Redocly 1.x 链中的 `js-yaml` 固定到 `4.3.0`、`minimatch` 固定到 `10.2.5`；拒绝 Audit 提议的破坏性降级到 `openapi-typescript 6.7.6`。重新生成 OpenAPI 时同时把滞后的生成物版本从 `0.8.0-dev` 校正为 `0.9.0-dev`。
+- **证据**：依赖树为 `@redocly/openapi-core 1.34.17 -> js-yaml 4.3.0 / minimatch 10.2.5 -> brace-expansion 5.0.8`；`npm ci --no-audit --no-fund` 从冷目录重建 130 个包，npm 官方 Registry Audit 返回 `found 0 vulnerabilities`。OpenAPI 类型生成成功，前端 `22 files / 84 tests passed`，Production Build 1,607 modules 成功。
+- **效果**：公开仓默认分支报告的 YAML merge-chain CPU DoS 与同链 brace/minimatch ReDoS 均从 lockfile 移除，同时保持当前 API 类型生成行为，不引入顶层生成器大版本迁移。
+- **边界**：这些包只用于开发期 OpenAPI 生成，不进入浏览器生产 bundle；override 跨越 Redocly 声明的 minimatch semver 范围，因此真实生成、测试和 build 是必要兼容证据。长期仍应在 `openapi-typescript` 升级到 Redocly 2.x 后移除 overrides，避免永久承担传递依赖选型。
