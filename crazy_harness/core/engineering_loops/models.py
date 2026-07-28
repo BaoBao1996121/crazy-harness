@@ -71,6 +71,7 @@ class EngineeringLoopContract(BaseModel):
     promotion_mode: PromotionMode = PromotionMode.AUTO_DISPOSABLE
     permissions: tuple[str, ...] = ()
     initial_state_ref: str = Field(min_length=1)
+    input_payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class EngineeringIterationIdentity(BaseModel):
@@ -78,6 +79,7 @@ class EngineeringIterationIdentity(BaseModel):
 
     iteration: int = Field(ge=1)
     iteration_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
     child_run_id: str = Field(min_length=1)
     child_task_id: str = Field(min_length=1)
 
@@ -94,6 +96,7 @@ def engineering_iteration_identity(
     return EngineeringIterationIdentity(
         iteration=iteration,
         iteration_id=f"iteration_{uuid5(NAMESPACE_URL, key).hex[:16]}",
+        candidate_id=f"candidate_{uuid5(NAMESPACE_URL, key + ':candidate').hex[:16]}",
         child_run_id=f"run_{uuid5(NAMESPACE_URL, key + ':run').hex[:12]}",
         child_task_id=f"task_{uuid5(NAMESPACE_URL, key + ':task').hex[:12]}",
     )
@@ -126,6 +129,7 @@ class IterationEvaluation(BaseModel):
     hard_gates: dict[str, bool] = Field(min_length=1)
     evidence_refs: tuple[str, ...] = Field(min_length=1)
     valid: bool
+    invalid_reasons: tuple[str, ...] = ()
 
 
 class LoopDecision(BaseModel):

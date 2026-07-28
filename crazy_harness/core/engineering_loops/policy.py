@@ -42,10 +42,10 @@ class DeterministicLoopPolicy:
             active_score,
         )
         next_no_progress = 0 if improved else no_progress_count + 1
-        target_reached = hard_gates_passed and self._target_reached(
-            metric.direction,
-            score,
-            metric.target,
+        target_reached = (
+            hard_gates_passed
+            and self._not_worse(metric.direction, score, active_score)
+            and self._target_reached(metric.direction, score, metric.target)
         )
         if target_reached:
             if contract.promotion_mode is PromotionMode.AUTO_DISPOSABLE:
@@ -138,6 +138,18 @@ class DeterministicLoopPolicy:
         if direction is MetricDirection.MAXIMIZE:
             return score > active_score
         return score < active_score
+
+    @staticmethod
+    def _not_worse(
+        direction: MetricDirection,
+        score: Decimal,
+        active_score: Decimal | None,
+    ) -> bool:
+        if active_score is None:
+            return True
+        if direction is MetricDirection.MAXIMIZE:
+            return score >= active_score
+        return score <= active_score
 
     @staticmethod
     def _blocked(

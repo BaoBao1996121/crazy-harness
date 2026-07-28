@@ -295,3 +295,13 @@
 - **边界**：EL0 还没有父 Event Projection、Scheduler 推进、Repo Golden Loop、HTTP 或前端；Scripted 两轮与 DeepSeek 实跑都尚未发生，不能宣称 Loop Engineering 已可供用户操作。
 
 设计审查：5/5 通过。无新增 Runtime 依赖；只记录实测测试和 CI 数字；错轮 Evaluation、版本漂移、无效证据、Hard Gate、退化、预算耗尽和人工门均有显式规则；阈值保持初始可配置；范围没有越出 EL0 领域层。
+
+### 10:39 Durable Engineering Loop EL1 持久父状态机
+
+- **时间**：2026-07-28 10:39:38 +08:00。
+- **动作**：新增 `EngineeringLoopService`，复用 SQLite Work Claim 与 deterministic Event，每次只推进 `plan -> propose -> validate -> child link -> observe -> evaluate -> decide -> terminal` 中的一个事实边界。Projection 从 Event 重建 Active、Score、无进展计数、Candidate、child Run、Evaluation 与 Decision。
+- **证据**：服务测试从缺包 RED 开始；第一版 `15 passed`。信任边界复审新增“达到目标但比 Active 退化”反例，先稳定复现错误晋升，再要求 Target 与 Non-regression 同时成立；Projection 同时复核连续 Iteration、确定性身份和 Active State 谱系。最终 Core + Service 为 `20 passed in 4.00s`；两个独立 Service 并发竞争时只有一个 Proposer 被调用且只形成一条 Candidate Event。
+- **效果**：Candidate 落盘后崩溃会直接复用，不再调用 Proposer；child Prepare 中断后使用同一 deterministic Run 身份重试；非终态 child 不产生假进展，错 Run 的 Outcome 会形成失败事实并阻止评分。父 Loop 已能用纯 Port 完整跑出 `0.5 -> 1.0` 两轮谱系。
+- **边界**：当前 child 与 Evaluator 仍由测试 Port 提供，尚未接入 ResidentRuntime、真实 Workspace、工具轨迹或机器 Scorer；没有 HTTP、SSE、取消和前端，因此仍不能称为可操作的 Loop Engineering MVP。300 秒 Advance Claim 是初始值，长模型调用后续应交给持久 Model Authority 或增加续租。
+
+设计审查：5/5 通过。无新增外部依赖；并发与测试数字均为本机实测；请求冲突、Candidate 崩溃、Prepare 中断、非终态 child、错身份 Outcome、Eval 版本/证据、退化与预算路径均有覆盖；Claim TTL 明确待调优；范围保持 EL1 父控制协议。

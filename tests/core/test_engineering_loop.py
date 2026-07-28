@@ -88,6 +88,7 @@ def test_iteration_and_child_run_identities_are_stable_and_distinct() -> None:
     second = engineering_iteration_identity("loop-quality", 2)
 
     assert first == replay
+    assert first.candidate_id != second.candidate_id
     assert first.iteration_id != second.iteration_id
     assert first.child_run_id != second.child_run_id
 
@@ -195,3 +196,30 @@ def test_target_candidate_waits_when_promotion_requires_approval() -> None:
     assert decision.kind is LoopDecisionKind.AWAITING_APPROVAL
     assert decision.accepted is False
     assert decision.pending_state_ref == "snapshot://candidate-1"
+
+
+def test_target_threshold_cannot_promote_a_regression_over_the_active_version() -> None:
+    decision = DeterministicLoopPolicy().decide(
+        contract(target="1"),
+        iteration=1,
+        evaluation=evaluation("1.1"),
+        active_score=Decimal("1.2"),
+        no_progress_count=0,
+    )
+
+    assert decision.kind is LoopDecisionKind.REJECT_CONTINUE
+    assert decision.accepted is False
+    assert decision.active_state_ref is None
+
+
+def test_minimize_metric_accepts_a_lower_score() -> None:
+    decision = DeterministicLoopPolicy().decide(
+        contract(direction=MetricDirection.MINIMIZE, target="0.5"),
+        iteration=1,
+        evaluation=evaluation("0.4"),
+        active_score=Decimal("0.8"),
+        no_progress_count=0,
+    )
+
+    assert decision.kind is LoopDecisionKind.COMPLETE
+    assert decision.accepted is True
