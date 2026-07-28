@@ -285,3 +285,13 @@
 - **证据**：依赖树为 `@redocly/openapi-core 1.34.17 -> js-yaml 4.3.0 / minimatch 10.2.5 -> brace-expansion 5.0.8`；`npm ci --no-audit --no-fund` 从冷目录重建 130 个包，npm 官方 Registry Audit 返回 `found 0 vulnerabilities`。OpenAPI 类型生成成功，前端 `22 files / 84 tests passed`，Production Build 1,607 modules 成功。
 - **效果**：公开仓默认分支报告的 YAML merge-chain CPU DoS 与同链 brace/minimatch ReDoS 均从 lockfile 移除，同时保持当前 API 类型生成行为，不引入顶层生成器大版本迁移。
 - **边界**：这些包只用于开发期 OpenAPI 生成，不进入浏览器生产 bundle；override 跨越 Redocly 声明的 minimatch semver 范围，因此真实生成、测试和 build 是必要兼容证据。长期仍应在 `openapi-typescript` 升级到 Redocly 2.x 后移除 overrides，避免永久承担传递依赖选型。
+
+### 10:29 Durable Engineering Loop EL0 领域边界冻结
+
+- **时间**：2026-07-28 10:29:49 +08:00。
+- **动作**：在已合并 Checkpoint v0.9 基线上，将外层 `EngineeringLoop` 与内层 `AgentLoop/Agent Team` 分离；比较泛化 EvalCampaign、扩大 AgentLoop 和新建持久父聚合三条路线后，采用 Port 驱动的父状态机。新增 Contract、Candidate、Evaluation、Decision、确定性 Iteration/child Run 身份与机械 Promotion Policy。
+- **证据**：三个不足 20 行的 Spike 全部通过：30 轮身份稳定无碰撞、Active/Candidate 内容寻址快照形成不可变代际、父子关联 Event 重放只提交一次。Core 测试先因领域包不存在得到真实 RED，首次实现后 `8 passed / 2 failed`；两处失败均为测试夹具错误，修正后 `10 passed in 0.42s`。同一时间安全 PR #20 三路 CI 全绿并合并，Dependabot #6 已由 GitHub 标记 `fixed`。
+- **效果**：平台现在拥有业务无关的“评测后再晋升”领域规则；模型或 Adapter 不能用 Run 成功、自述或未经版本核验的分数直接完成父 Loop。下一阶段可以在不改写这些规则的前提下接入持久 Service 和真实 child Agent Run。
+- **边界**：EL0 还没有父 Event Projection、Scheduler 推进、Repo Golden Loop、HTTP 或前端；Scripted 两轮与 DeepSeek 实跑都尚未发生，不能宣称 Loop Engineering 已可供用户操作。
+
+设计审查：5/5 通过。无新增 Runtime 依赖；只记录实测测试和 CI 数字；错轮 Evaluation、版本漂移、无效证据、Hard Gate、退化、预算耗尽和人工门均有显式规则；阈值保持初始可配置；范围没有越出 EL0 领域层。
