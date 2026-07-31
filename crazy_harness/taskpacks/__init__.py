@@ -4,6 +4,7 @@ from crazy_harness.taskpacks.evidence_research import (
     PreparedResearchWorkspace,
 )
 from crazy_harness.taskpacks.repo_maintainer import PreparedRepoWorkspace, RepoMaintainerTaskPack
+from crazy_harness.taskpacks.repo_quality import RepoQualityTaskPack
 from crazy_harness.taskpacks.repo_team import RepoMaintainerTeamTaskPack
 from crazy_harness.taskpacks.repo_scorer import RepoMaintainerScore, RepoMaintainerScorer
 from crazy_harness.taskpacks.resident_team import ResidentDemoTeamTaskPack
@@ -18,5 +19,6 @@ __all__ = [
     "RepoMaintainerScore",
     "RepoMaintainerScorer",
     "RepoMaintainerTeamTaskPack",
+    "RepoQualityTaskPack",
     "TaskPack",
 ]

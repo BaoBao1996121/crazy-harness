@@ -10,6 +10,65 @@
 - 纯后端阶段附最窄复现命令或持久事件，不为了截图额外制造 UI。
 - 本文件记录事实；规划与待办仍以 `GENERAL_AGENT_TEAM_MASTER_PLAN.md` 和 `PROJECT_PROGRESS.md` 为准。
 
+## 2026-07-31
+
+### v0.10 恢复语义终审与前端状态收口
+
+- **动作**：两轮独立只读审查后，为 AgentRun 控制与 Engineering Loop 补做恢复语义加固。Pause 允许已预约的真实模型调用完整收尾；Resume 的 requested/applied 两阶段支持重启对账，并服从更新的 Pause。Fork 在 Checkpoint 前做能力预检、区分 `fork_supported/fork_ready`，且 Assignment 只有在 `checkpoint.restore.committed` 后才允许投递。Nudge 不能被单独的 `model.requested` 消费，只有关联的 `model.call.attempt.started` 或 `model.completed` 才证明已交付。Engineering Loop 先提交父级 `iteration.started` 再准备 child；失败/取消 child 进入 `iteration.failed -> loop.blocked`，旧脏完成事实禁止评估；LoopPack 身份、实现指纹、TaskPack 与权限授权在创建时冻结并逐次复核。HTTP 404/409 的 OpenAPI 声明与真实结构化错误体保持一致。
+- **证据**：每项修复均先得到确定性 RED，包括前端 Fork/双语 2 项、Nudge 崩溃交错 1 项、Fork/Resume/LoopPack 5 项、失败 child Runtime 1 项及 Engineering Service 多项反例。最终核心恢复组 `34 passed`、Engineering Loop 组 `22 passed`、HTTP 纵切 `3 passed`、Smoke `8 passed / 431 deselected`；前端 `23 files / 89 tests passed` 且 production build 成功，`crazy_harness + tests + work/spikes` 范围 Ruff 通过。全仓 Ruff 仍只命中两份教学参考骨架中故意留空的 `MicrocompactResult`，未伪装成全仓零告警。真实 Kill-Restart 从 PID `32120` 切换到 `34028` 后，Run `run_7a9aa917e7a2` 仍为 Paused、同一 child `run_c525c6964f33`、事件数 `10 -> 10`，连续 3 次 Session GET 后仍为 10。
+- **效果**：控制面不再把系统 Waiting 冒充人工 Pause，不会让旧 Resume 覆盖新 Pause，也不会在取消状态开放错误控制；Fork 不会产生未建谱系的孤儿 Run。失败 child 不再因缺少成功快照而让父调度周期反复抛错，更不能进入 Evaluation/Promotion。SSE 事件用 150ms 尾随刷新合并，Branch 只在 Run 切换时读取；Engineering Loop 列表使用 `event_type` 索引查询。
+- **截图**：桌面 `1440x900` 与移动 `390x844` 已覆盖写入 `docs/assets/agent-run-controls-desktop.png`、`docs/assets/agent-run-controls-mobile.png`。桌面状态条 `scrollWidth=clientWidth=829`、控制带宽 `1440`；移动品牌文字 `scrollWidth=clientWidth=73`、控制带单列宽 `375`；浏览器日志为空。
+- **边界**：本轮按探索节奏没有运行完整 Release/Nightly，也没有伪造缺失的 DeepSeek Key；已执行 Changed、Smoke、核心邻接组和真实重启。父级 Engineering Loop HTTP/SSE/UI、Team/Peer Session 控制、远程 A2A 和外部不可逆 Effect 补偿仍在后续阶段。
+
+设计审查：5/5 通过。无新增运行依赖；所有数量、PID、Run ID、视口与耗时均来自本机执行；在途调用、跨事务恢复、重复请求、能力不支持、快照漂移和外部 Effect 边界均显式处理；SSE `150ms` 是用于合并突发刷新的前端初始值，待长程事件负载调优；范围保持在 single-Agent 控制与 EL2 父循环可靠性加固。
+
+### AgentRun Control Room、只读纯度与 Kill-Restart
+
+- **动作**：为 single-Agent Run 接入六条正式 HTTP 查询/控制路由与中英双语 Control Room，提供 Session 状态、Pause/Resume、latest-only Nudge、verified Fork 和父子分支下钻；同时把 `agent_run_view()` 改为直接从持久事件投影，关闭 GET 查询意外写入 `skill.catalog.compiled` 的副作用，并让 Scheduler 的背压计数与归属都排除 Paused Delivery。
+- **证据**：真实 Run `run_7a9aa917e7a2` 在进程终止前后都保持 Paused、0 completed turn、同一 child `run_c525c6964f33` 与 10 条事件；重复 GET 后事件数仍为 10，`runtime.scheduler.backpressure=0`、`skill.catalog.compiled=0`。首轮前端全量 `23 files / 86 tests passed`，production build 通过；Stage 1 为控制/Session `6 passed`、API 与背压各 1 条通过，Stage 2 为 EngineeringLoop/Single Runtime `12 passed`、Checkpoint/AgentLoop `16 passed`，Ruff 全绿。终审后的最新数字见上一条记录。
+- **效果**：Pause、Nudge、Fork 不再只是后端能力；使用者可以从网页看见并操作真实持久状态，刷新或重启后继续同一条事实链。读页面本身不会改变被观察对象，暂停父 Run 也不会被误记成其他 child Run 的背压事件。
+- **截图**：桌面 1440x900 为 `docs/assets/agent-run-controls-desktop.png`，移动 390x844 为 `docs/assets/agent-run-controls-mobile.png`；两者均打开 Run `run_7a9aa917e7a2`，无页面横向溢出，浏览器控制台 0 error / 0 warning。
+- **边界**：第一版仍只控制 single-Agent Run；Pause 等待在途 Turn 收尾，不撤销外部副作用。Team/Peer Session、Remote A2A 控制和父级 Engineering Loop 页面尚未实现；Scripted Golden 不证明 DeepSeek 开放任务质量。本阶段按探索策略未运行耗时的完整 Nightly/Release 套件。
+
+设计审查：5/5 通过。复用现有 HTTP、SSE、SQLite、Checkpoint 和 React，无新增运行依赖；所有测试、事件数和视口均为本机实测；查询副作用、重启、暂停归属、重复请求和外部 Effect 边界均有显式处理；无新增经验阈值；范围没有越过 single-Agent 控制纵切。
+
+### AgentRun 持久 Pause / Resume / Nudge / Fork
+
+- **动作**：新增 Run 级持久控制协议。Pause 先写 `run.pause.requested` 并在 SQLite Claim 事务中形成新工作写屏障，在途 Turn 完整收尾后才写 `run.paused`；Resume 写入请求与生效事件后恢复原邮箱领取资格。Nudge 使用 `agent.nudge.set` latest-only 槽，持久记录替换关系，并由 `model.requested.active_nudge_event_id` 证明实际进入 Prompt。Fork 组合 verified Checkpoint + Restore 派生新 Run，分支视图直接从恢复事实重建。
+- **证据**：4 条控制纵切实测 `4 passed in 27.71s`，覆盖暂停前零模型调用、重启后仍暂停、恢复后成功、连续 Nudge 只暴露最新版、Fork 幂等与父子谱系，以及模型调用已开始时先 `pausing`、本轮 `tool.completed` 后才 `run.paused`。Checkpoint/AgentLoop 邻接回归实测 `26 passed in 66.57s`，Ruff 全绿；三个前置 Spike 全部通过。
+- **效果**：使用者可以在不修改历史、不依赖 Runtime 内存的前提下停住一次 AgentRun、修改下一轮指导、继续原分支，或从已验证状态派生另一条分支。Pause、Nudge 和 Fork 均能在重启后由事件恢复，不复制模型隐藏推理。
+- **边界**：第一版只开放 single-Agent Run 控制；Pause 不会中断已经开始的模型调用、工具或外部副作用，只阻止下一个 Turn。Resume 不会伪造等待中的外部事件。Fork 仍限 `repo-maintainer` disposable workspace；外部 Unknown、不可逆和需对账 Effect 继续阻止自动恢复。分支查询当前扫描本地 EventStore，尚未建立大规模图索引。
+
+设计审查：5/5 通过。复用现有 SQLite、Mailbox 与 Checkpoint，无新增依赖；测试耗时均为本机实测；在途 Turn、重启、重复请求、Payload 漂移、终态控制、Unknown/外部 Effect 边界均 fail-closed 或有明确限制；无新增可调阈值；范围未扩展到 Team/Remote A2A。
+
+### PI 启发的 AgentRunSession 与能力清单同源审计
+
+- **动作**：在 canonical `AgentLoop` 外新增 `AgentRunSession` 组合边界，用 `run/task/agent/kind` 标识一次隔离运行，并从 EventLog 重建 `ready/running/waiting/blocked/completed/failed`、完成轮次、最新 Phase 与 Capability Manifest 哈希；Resident 单 Agent 调度改为缓存 Session，对外新增只读 `agent_run_view(run_id)`。同时让 `model.requested` 持久记录本轮 Capability Manifest 的事件 ID、哈希和实际原生 Tool Schema 名称。
+- **证据**：Session 单测覆盖首次执行、进程对象重建、终态再次 `step()` 不重采样；Resident 纵切覆盖运行前视图、真实 TaskPack 完成和新 Runtime 重建后视图完全相同。Prompt/Tool 一致性用例同时验证未授权工具不出现在 Prompt、原生 tools 数组和审计清单。相关回归实测 `28 passed in 158.57s`，受影响文件 Ruff `--no-cache` 全绿。
+- **效果**：`AgentLoop` 继续只负责单轮认知与执行内核，`AgentRunSession` 开始承担产品级运行身份和持久投影；控制面、未来 HTTP/SSE 与恢复功能不再需要读取裸 Loop 的临时字段。每次模型调用也能回答“模型当时依据哪份能力清单、实际拿到了哪些工具”。
+- **边界**：当前只接入 Resident 单 Agent；Team Assignment/Peer 尚未迁移到 Session。Session 目前是只读投影加单步入口，持久 Pause/Resume/Nudge/Fork 尚未实现；能力同源仍由项目自有 Compiler 生成，不复制 PI 的 JSONL 会话树或把 Extension 当安全边界。
+
+设计审查：5/5 通过。无新增第三方依赖和性能承诺；状态完全从 EventLog 重建；空 Seed、身份不一致、未知 Run、错误执行模式均 fail-closed；没有新增经验阈值；范围仅覆盖单 Agent Session 与能力审计。
+
+### Durable Engineering Loop EL2 真实 Runtime 纵切转绿
+
+- **动作**：新增 `repo-quality` LoopPack 与 TaskPack，把持久父状态机接入 `ResidentRuntime`；每轮从 Active 快照准备独立 workspace/baseline，启动 canonical 单 AgentRun，完成后由父循环外部的 Evaluator 从不可变快照重跑测试并评分。
+- **证据**：端到端规格从缺少 `create_engineering_loop()` 的稳定 RED 转为 GREEN；两轮分别得到 `0.5 -> 1.0`，均产生 `model.completed`、`tool.completed(test.run)` 与 `completion.gate.passed`。新增“子 Run 已终结、父 Loop 尚未观察时重启”用例，恢复后沿用同一 child Run 并只记录一次 iteration completion。聚焦回归实测 `41 passed in 124.03s`，EL2 两条 Runtime 用例实测 `2 passed in 55.57s`。
+- **效果**：EngineeringLoop 不再是纯 Port 演示；它现在真正承载“候选 -> 子 Agent 执行 -> 快照 -> 独立评估 -> 晋升 -> 下一轮”，第二轮的 `base_state_ref` 等于第一轮被接受的 `candidate_state_ref`，最终快照可恢复出修复后的源码且不含 `QUALITY-TODO`。
+- **边界**：当前是 Scripted Golden Loop，只证明控制协议、工具事实、快照血缘、独立评估与恢复可运行，不证明 DeepSeek 的真实代码能力。HTTP/SSE、Control Room、取消、人工晋升与完整 Kill-Restart Demo 仍在 EL3/EL4；自动晋升仍只允许 disposable workspace。
+
+设计审查：5/5 通过。无新增第三方依赖；所有耗时和测试数量均来自本机实测；子 Run 失败、评估超时、快照不匹配与重启补观察均 fail-closed；30 秒评估超时是初始值、待真实仓库调优；范围未扩展到外部不可逆写入。
+
+## 2026-07-28
+
+### Scientific Harness 方向与首条真实纵切冻结
+
+- **动作**：基于当前 As-Built、Anew Labs 官网研究/平台/招聘信息和本地 AI 制药学习材料，完成当前能力、目标企业需求与平台 Gap 对照。
+- **证据**：`docs/ANEW_SCIENTIFIC_HARNESS_GAP_ROADMAP.md`，包含事实边界、Gap Matrix、目标架构、阶段路线和 5/5 设计审查。
+- **效果**：确认 Crazy 不复制科学基础模型，而演进为其上的 Scientific Harness；下一条业务纵切冻结为“RDKit 分子候选批量初筛与证据评审”。
+- **验证**：Markdown fence、Git diff 和知识库 R155 索引检查通过；`check_course_ready.py` 的全量参考套件为 `401 passed, 3 skipped, 1 failed`，唯一失败正是保留的 EL2 Runtime RED。Block 8 在总门禁中一度超时，单独复跑 6.63 秒得到预期教学 RED，不是新增回归。
+- **边界**：本阶段只做方案冻结，没有修改运行时代码；课程总状态会在 EL2 RED 转绿前保持 failed。Anew 私有 API、真实湿实验、领域模型性能和生产合规均未验证。
+
 ## 2026-07-18
 
 ### 22:43 建立阶段突破记录协议
@@ -285,3 +344,33 @@
 - **证据**：依赖树为 `@redocly/openapi-core 1.34.17 -> js-yaml 4.3.0 / minimatch 10.2.5 -> brace-expansion 5.0.8`；`npm ci --no-audit --no-fund` 从冷目录重建 130 个包，npm 官方 Registry Audit 返回 `found 0 vulnerabilities`。OpenAPI 类型生成成功，前端 `22 files / 84 tests passed`，Production Build 1,607 modules 成功。
 - **效果**：公开仓默认分支报告的 YAML merge-chain CPU DoS 与同链 brace/minimatch ReDoS 均从 lockfile 移除，同时保持当前 API 类型生成行为，不引入顶层生成器大版本迁移。
 - **边界**：这些包只用于开发期 OpenAPI 生成，不进入浏览器生产 bundle；override 跨越 Redocly 声明的 minimatch semver 范围，因此真实生成、测试和 build 是必要兼容证据。长期仍应在 `openapi-typescript` 升级到 Redocly 2.x 后移除 overrides，避免永久承担传递依赖选型。
+
+### 10:29 Durable Engineering Loop EL0 领域边界冻结
+
+- **时间**：2026-07-28 10:29:49 +08:00。
+- **动作**：在已合并 Checkpoint v0.9 基线上，将外层 `EngineeringLoop` 与内层 `AgentLoop/Agent Team` 分离；比较泛化 EvalCampaign、扩大 AgentLoop 和新建持久父聚合三条路线后，采用 Port 驱动的父状态机。新增 Contract、Candidate、Evaluation、Decision、确定性 Iteration/child Run 身份与机械 Promotion Policy。
+- **证据**：三个不足 20 行的 Spike 全部通过：30 轮身份稳定无碰撞、Active/Candidate 内容寻址快照形成不可变代际、父子关联 Event 重放只提交一次。Core 测试先因领域包不存在得到真实 RED，首次实现后 `8 passed / 2 failed`；两处失败均为测试夹具错误，修正后 `10 passed in 0.42s`。同一时间安全 PR #20 三路 CI 全绿并合并，Dependabot #6 已由 GitHub 标记 `fixed`。
+- **效果**：平台现在拥有业务无关的“评测后再晋升”领域规则；模型或 Adapter 不能用 Run 成功、自述或未经版本核验的分数直接完成父 Loop。下一阶段可以在不改写这些规则的前提下接入持久 Service 和真实 child Agent Run。
+- **边界**：EL0 还没有父 Event Projection、Scheduler 推进、Repo Golden Loop、HTTP 或前端；Scripted 两轮与 DeepSeek 实跑都尚未发生，不能宣称 Loop Engineering 已可供用户操作。
+
+设计审查：5/5 通过。无新增 Runtime 依赖；只记录实测测试和 CI 数字；错轮 Evaluation、版本漂移、无效证据、Hard Gate、退化、预算耗尽和人工门均有显式规则；阈值保持初始可配置；范围没有越出 EL0 领域层。
+
+### 10:39 Durable Engineering Loop EL1 持久父状态机
+
+- **时间**：2026-07-28 10:39:38 +08:00。
+- **动作**：新增 `EngineeringLoopService`，复用 SQLite Work Claim 与 deterministic Event，每次只推进 `plan -> propose -> validate -> child link -> observe -> evaluate -> decide -> terminal` 中的一个事实边界。Projection 从 Event 重建 Active、Score、无进展计数、Candidate、child Run、Evaluation 与 Decision。
+- **证据**：服务测试从缺包 RED 开始；第一版 `15 passed`。信任边界复审新增“达到目标但比 Active 退化”反例，先稳定复现错误晋升，再要求 Target 与 Non-regression 同时成立；Projection 同时复核连续 Iteration、确定性身份和 Active State 谱系。最终 Core + Service 为 `20 passed in 4.00s`；两个独立 Service 并发竞争时只有一个 Proposer 被调用且只形成一条 Candidate Event。
+- **效果**：Candidate 落盘后崩溃会直接复用，不再调用 Proposer；child Prepare 中断后使用同一 deterministic Run 身份重试；非终态 child 不产生假进展，错 Run 的 Outcome 会形成失败事实并阻止评分。父 Loop 已能用纯 Port 完整跑出 `0.5 -> 1.0` 两轮谱系。
+- **边界**：当前 child 与 Evaluator 仍由测试 Port 提供，尚未接入 ResidentRuntime、真实 Workspace、工具轨迹或机器 Scorer；没有 HTTP、SSE、取消和前端，因此仍不能称为可操作的 Loop Engineering MVP。300 秒 Advance Claim 是初始值，长模型调用后续应交给持久 Model Authority 或增加续租。
+
+设计审查：5/5 通过。无新增外部依赖；并发与测试数字均为本机实测；请求冲突、Candidate 崩溃、Prepare 中断、非终态 child、错身份 Outcome、Eval 版本/证据、退化与预算路径均有覆盖；Claim TTL 明确待调优；范围保持 EL1 父控制协议。
+
+### 11:09 当前平台 As-Built 学习架构冻结
+
+- **时间**：2026-07-28 11:09:46 +08:00。
+- **动作**：按用户要求暂停 EL2 编码，保留刚得到的 Runtime 端到端 RED；新建 `CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md`，把截至 EL1 的当前代码重新组织为六层架构、五种循环、持久事实、Single/Team、Context/Capability、质量治理与恢复模型。
+- **证据**：新指南包含 9 张中英双语 Mermaid 图，每张图后均有名词解释；9 个专项文档相对链接全部实测存在。EL0/EL1 聚焦回归重新实跑为 `20 passed in 2.95s`；EL2 RED 单测稳定失败在缺少 `ResidentRuntime.create_engineering_loop()`，没有用假实现把测试转绿。
+- **效果**：新的第一阅读入口只描述 As-Built 事实，并把 Full Compact 自动触发、Memory Recall、真实 Dream/Evolution、DeepSeek Live、Remote A2A 和 EL2 接线分别标为待办；用户可以先按四张核心图学习，再从同一 RED 恢复开发。
+- **边界**：本轮没有实现 `repo-quality`、真实 child Run、Engineering Loop API/UI，也没有运行后端全量回归；文档中的 `20 passed` 来自此前 EL0/EL1 聚焦实测，EL2 当前仍是预期 RED。
+
+设计审查：5/5 通过。无新增外部依赖；只引用已有实测数字；异常和恢复边界均有说明；性能阈值标为初始值；未将目标架构冒充当前能力。

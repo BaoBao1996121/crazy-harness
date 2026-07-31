@@ -12,7 +12,7 @@ def test_health_reports_the_current_control_plane_behavior_version(tmp_path):
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json()["version"] == "v0.9.0-dev"
+    assert response.json()["version"] == "v0.10.0-dev"
 
 
 def test_http_tells_client_when_a_failed_pair_requires_a_new_request_id(
@@ -421,6 +421,107 @@ def test_http_can_create_inspect_and_fork_restore_a_checkpoint(tmp_path):
     assert restored.json()["source_run_id"] == created["run_id"]
     assert drained.status_code == 200
     assert snapshot["run"]["status"] == "succeeded"
+
+
+def test_http_exposes_durable_agent_run_controls_and_branch_projection(tmp_path):
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={
+                "title": "Controllable AgentRun",
+                "brief": "Pause, guide, resume, and fork this repair.",
+                "execution_mode": "single",
+                "model_mode": "scripted",
+                "task_pack": "repo-maintainer",
+            },
+        ).json()
+        run_id = created["run_id"]
+
+        paused = client.post(
+            f"/api/runs/{run_id}/controls/pause",
+            json={"request_id": "api-pause-1", "reason": "inspect before run"},
+        )
+        nudged = client.post(
+            f"/api/runs/{run_id}/controls/nudge",
+            json={
+                "request_id": "api-nudge-1",
+                "message": "Inspect behavior and tests before editing.",
+            },
+        )
+        session = client.get(f"/api/runs/{run_id}/agent-run")
+        resumed = client.post(
+            f"/api/runs/{run_id}/controls/resume",
+            json={"request_id": "api-resume-1", "reason": "guidance reviewed"},
+        )
+        assert runtime.scheduler.run_once() is True
+        forked = client.post(
+            f"/api/runs/{run_id}/forks",
+            json={"request_id": "api-fork-1", "label": "alternate repair"},
+        )
+        child_run_id = forked.json()["run_id"]
+        source_branch = client.get(f"/api/runs/{run_id}/branch")
+        child_branch = client.get(f"/api/runs/{child_run_id}/branch")
+        stream = client.get(
+            f"/api/events/stream?run_id={run_id}&after=0&once=true"
+        )
+        openapi = client.get("/openapi.json").json()
+
+    assert paused.status_code == nudged.status_code == 200
+    assert session.status_code == resumed.status_code == 200
+    assert paused.json()["status"] == "paused"
+    assert nudged.json()["status"] == "pending_next_turn"
+    assert session.json()["status"] == "paused"
+    assert session.json()["identity"]["kind"] == "single"
+    assert resumed.json()["status"] == "running"
+    assert forked.status_code == 200
+    assert source_branch.json()["children_run_ids"] == [child_run_id]
+    assert child_branch.json()["parent_run_id"] == run_id
+    assert '"type":"agent.nudge.set"' in stream.text
+    assert '"type":"run.resumed"' in stream.text
+    for path, method in {
+        "/api/runs/{run_id}/agent-run": "get",
+        "/api/runs/{run_id}/controls/pause": "post",
+        "/api/runs/{run_id}/controls/resume": "post",
+        "/api/runs/{run_id}/controls/nudge": "post",
+        "/api/runs/{run_id}/forks": "post",
+        "/api/runs/{run_id}/branch": "get",
+    }.items():
+        responses = openapi["paths"][path][method]["responses"]
+        assert "404" in responses
+        if method == "post":
+            assert "409" in responses
+
+
+def test_agent_run_control_errors_match_the_published_openapi_schema(tmp_path):
+    app = create_app(tmp_path, background=False)
+    with TestClient(app) as client:
+        missing = client.get("/api/runs/run_missing/agent-run")
+        unsupported = client.post(
+            "/api/runs",
+            json={
+                "title": "Research cannot workspace-fork",
+                "brief": "Keep capability boundaries explicit.",
+                "execution_mode": "single",
+                "model_mode": "scripted",
+                "task_pack": "evidence-research",
+            },
+        ).json()
+        conflict = client.post(
+            f"/api/runs/{unsupported['run_id']}/forks",
+            json={"request_id": "api-fork-unsupported", "label": "invalid"},
+        )
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == {
+        "code": "agent_run_not_found",
+        "message": "run not found",
+        "retryable": False,
+    }
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "fork_conflict"
+    assert conflict.json()["detail"]["retryable"] is False
 
 
 def test_http_rejects_live_deepseek_without_a_key(tmp_path, monkeypatch):

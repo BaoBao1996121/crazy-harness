@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from crazy_harness.control_plane.runtime import ResidentRuntime, TaskRequest
+from crazy_harness.core.agents import AgentRunKind, AgentRunStatus
 from crazy_harness.core.models import FakeModelProvider
 
 
@@ -244,3 +245,30 @@ def test_default_scripted_runtime_resumes_after_process_restart_without_replay(t
     assert sum(event.type == "model.completed" for event in events) == len(
         recovered_runtime.repo_maintainer_pack.scripted_responses()
     )
+
+
+def test_single_agent_run_view_is_rebuilt_from_durable_facts_after_restart(tmp_path):
+    runtime = ResidentRuntime(tmp_path)
+    created = runtime.submit_task(_repo_maintainer_request())
+
+    before_view = runtime.store.read_all(run_id=created.run_id)
+    ready = runtime.agent_run_view(created.run_id)
+    after_view = runtime.store.read_all(run_id=created.run_id)
+    assert ready.identity.kind is AgentRunKind.SINGLE
+    assert ready.identity.agent_id == "generalist"
+    assert ready.status is AgentRunStatus.READY
+    assert after_view == before_view
+
+    runtime.run_until_idle(max_steps=50)
+    completed = runtime.agent_run_view(created.run_id)
+
+    assert completed.status is AgentRunStatus.COMPLETED
+    assert completed.completed_turns == sum(
+        event.type == "model.completed"
+        for event in runtime.store.read_all(run_id=created.run_id)
+    )
+    assert completed.completed_turns > 0
+    assert completed.capability_manifest_hash
+
+    restarted = ResidentRuntime(tmp_path)
+    assert restarted.agent_run_view(created.run_id) == completed

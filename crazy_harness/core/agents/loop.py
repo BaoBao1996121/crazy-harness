@@ -65,6 +65,17 @@ _TURN_COMPLETED_EVENTS = {
 # 这些事件才表示整个 Assignment 已经结束，后续不应再调用模型。
 _RUN_TERMINAL_EVENTS = {"agent.stopped", "agent.submitted", "agent.failed"}
 
+_UNCORRELATED_WAIT_METADATA_EVENTS = {
+    "run.paused",
+    "run.pause.requested",
+    "run.resume.requested",
+    "run.resumed",
+    "checkpoint.barrier.acquired",
+    "checkpoint.requested",
+    "checkpoint.committed",
+    "checkpoint.barrier.released",
+}
+
 
 @dataclass
 class AgentLoop:
@@ -182,12 +193,34 @@ class AgentLoop:
                 )
             self._phase(LoopPhase.MODEL_CALLING, turn_id)
             request_trigger = context_event or capability_event or events[-1]
+            disclosed_names = self._disclosed_names(capability_event)
+            tool_schemas = self._tool_schemas(disclosed_names)
+            capability_manifest_hash = None
+            if capability_event is not None:
+                capability_manifest_hash = capability_event.payload["manifest"].get(
+                    "manifest_hash"
+                )
+            active_nudge_event = (
+                None if self.active_nudge else self._latest_active_nudge_event()
+            )
             requested = self._append(
                 "model.requested",
                 {
                     "turn_id": turn_id,
                     "message_count": len(messages),
                     "prompt_hash": prompt_hash,
+                    "capability_manifest_event_id": (
+                        capability_event.id if capability_event is not None else None
+                    ),
+                    "capability_manifest_hash": capability_manifest_hash,
+                    "tool_schema_names": [
+                        schema["function"]["name"] for schema in tool_schemas
+                    ],
+                    "active_nudge_event_id": (
+                        active_nudge_event.id
+                        if active_nudge_event is not None
+                        else None
+                    ),
                     "contract_version": self.assignment_contract.version if self.assignment_contract else None,
                     "local_plan_version": self.local_plan.version if self.local_plan else 0,
                 },
@@ -196,9 +229,6 @@ class AgentLoop:
             request_event = requested
 
             # model.completed 是模型响应的持久边界：它落盘后即使进程崩溃也应复用。
-            tool_schemas = self._tool_schemas(
-                self._disclosed_names(capability_event)
-            )
             if self.model_call_authority is None:
                 response = self.model.complete(
                     messages,
@@ -687,18 +717,45 @@ class AgentLoop:
         return False
 
     def _latest_active_nudge(self) -> str | None:
-        """返回仍有效的最近 Nudge；一旦有新工具证据，它就不再继续注入。"""
+        """返回尚未被一次真实模型调用消费的最近 Nudge。"""
+
+        event = self._latest_active_nudge_event()
+        return str(event.payload.get("message", "")) or None if event else None
+
+    def _latest_active_nudge_event(self) -> Event | None:
+        """Return the latest protected Nudge fact, replacing all older slots."""
 
         events = self._events()
         last_nudge_index = next(
-            (index for index in range(len(events) - 1, -1, -1) if events[index].type == "agent.nudged"),
+            (
+                index
+                for index in range(len(events) - 1, -1, -1)
+                if events[index].type in {"agent.nudged", "agent.nudge.set"}
+            ),
             None,
         )
         if last_nudge_index is None:
             return None
-        if any(event.type == "tool.completed" for event in events[last_nudge_index + 1 :]):
+        nudge = events[last_nudge_index]
+        nudge_request_ids = {
+            event.id
+            for event in events[last_nudge_index + 1 :]
+            if event.type == "model.requested"
+            and event.payload.get("active_nudge_event_id") == nudge.id
+        }
+        if any(
+            (
+                event.type == "model.completed"
+                and event.causation_id in nudge_request_ids
+            )
+            or (
+                event.type == "model.call.attempt.started"
+                and event.payload.get("call_id") in nudge_request_ids
+            )
+            for event in events[last_nudge_index + 1 :]
+        ):
             return None
-        return str(events[last_nudge_index].payload.get("message", "")) or None
+        return nudge
 
     def _execute_via_pipeline(self, action: AgentAction, *, turn_id: str, command_event: Event) -> None:
         """经完整 ToolPipeline 执行单个工具请求，并同步 Ledger 与 EventLog。"""
@@ -1028,9 +1085,13 @@ class AgentLoop:
         correlation_id = waiting.payload.get("correlation_id")
         later = events[waiting_index + 1 :]
 
-        # 没有 correlation 的普通等待，只要后面还没有任何新事件就仍然有效。
+        # 展示、暂停和 Checkpoint 等管理事实不能冒充业务唤醒信号。
+        # 对无 correlation 的普通等待，只有至少一个非管理事实才能继续 Loop。
         if correlation_id is None:
-            return not later
+            return not any(
+                event.type not in _UNCORRELATED_WAIT_METADATA_EVENTS
+                for event in later
+            )
 
         # A2A 回复、审批结果或超时事件都可以解除对应 correlation 的等待。
         return not any(

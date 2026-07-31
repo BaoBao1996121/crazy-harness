@@ -4,13 +4,14 @@
 
 - `crazy_harness/` 中自主实现的运行时代码
 - `frontend/` 源码，不包含 `node_modules` 与构建产物
-- `tests/`、可复现的 `examples/` 和 Golden Task fixtures
+- `tests/`、可复现的 `examples/`、Golden Task fixtures，以及不含用户数据的 `work/spikes/` 验证脚本
 - 通用架构文档、ADR、公开来源链接和学习教程
+- 经人工检查、不含本地路径或真实任务数据的 `docs/assets/` 产品截图
 - `.env.example`，不得包含真实 Key
 
 ## 默认不公开
 
-- `runs/`、`output/`、`outputs/`、SQLite 数据库和浏览器截图
+- `runs/`、`output/`、`outputs/`、SQLite 数据库和未经脱敏审阅的浏览器截图
 - `research_sources/` 上游仓库镜像
 - 飞书原文、Obsidian Vault、内部附件和个人聊天内容
 - 含本机绝对路径、用户名、Token、Cookie、SSH Key 或云账号的信息

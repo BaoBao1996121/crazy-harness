@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useState } from "react";
 
 import { AgentRail } from "./components/AgentRail";
+import { AgentRunControlBand } from "./components/AgentRunControlBand";
 import { CampaignBand } from "./components/CampaignBand";
 import { CheckpointBand } from "./components/CheckpointBand";
 import { CreateCampaignDialog } from "./components/CreateCampaignDialog";
@@ -12,6 +13,7 @@ import { InspectorPanel, type InspectorTab } from "./components/InspectorPanel";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { useControlPlane } from "./hooks/useControlPlane";
+import { useAgentRunControls } from "./hooks/useAgentRunControls";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useEvalCampaign } from "./hooks/useEvalCampaign";
 import { usePairedEval } from "./hooks/usePairedEval";
@@ -24,9 +26,20 @@ export default function App() {
   });
   const campaign = useEvalCampaign();
   const [checkpointOpen, setCheckpointOpen] = useState(false);
+  const [agentControlOpen, setAgentControlOpen] = useState(false);
+  const executionMode = control.events.find(
+    (record) => record.event.type === "run.created",
+  )?.event.payload?.execution_mode;
+  const isSingleAgentRun = executionMode === "single";
   const checkpoints = useCheckpoints({
     runId: control.runId,
     enabled: checkpointOpen,
+    onSelectRun: control.selectRun,
+  });
+  const agentControls = useAgentRunControls({
+    runId: control.runId,
+    enabled: agentControlOpen && isSingleAgentRun,
+    refreshToken: control.events.at(-1)?.event.id,
     onSelectRun: control.selectRun,
   });
   const [showAll, setShowAll] = useState(false);
@@ -41,16 +54,24 @@ export default function App() {
   };
 
   return (
-    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""} ${checkpointOpen && control.runId ? "has-checkpoint" : ""}`}>
+    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""} ${(checkpointOpen || (agentControlOpen && isSingleAgentRun)) && control.runId ? "has-checkpoint" : ""}`}>
       <TopBar
         snapshot={control.snapshot}
         streamState={control.streamState}
         eventCount={control.events.length}
-        busy={control.busy || pairedEval.busy || campaign.busy || checkpoints.busy}
+        busy={control.busy || pairedEval.busy || campaign.busy || checkpoints.busy || agentControls.busy}
+        agentControlAvailable={isSingleAgentRun}
         onNewRun={() => setDialogOpen(true)}
         onNewEval={() => setEvalDialogOpen(true)}
         onNewCampaign={() => setCampaignDialogOpen(true)}
-        onCheckpoints={() => setCheckpointOpen(true)}
+        onCheckpoints={() => {
+          setAgentControlOpen(false);
+          setCheckpointOpen(true);
+        }}
+        onAgentControl={() => {
+          setCheckpointOpen(false);
+          setAgentControlOpen(true);
+        }}
         onCancel={() => void control.cancelRun()}
         onChaos={openChaos}
       />
@@ -78,6 +99,25 @@ export default function App() {
             />
           )}
         </div>
+      )}
+      {agentControlOpen && isSingleAgentRun && control.runId && (
+        <AgentRunControlBand
+          runId={control.runId}
+          session={agentControls.session}
+          branch={agentControls.branch}
+          nudge={agentControls.nudge}
+          forkLabel={agentControls.forkLabel}
+          loading={agentControls.loading}
+          busy={agentControls.busy}
+          onNudgeChange={agentControls.setNudge}
+          onForkLabelChange={agentControls.setForkLabel}
+          onPause={() => void agentControls.pause()}
+          onResume={() => void agentControls.resume()}
+          onSendNudge={() => void agentControls.sendNudge()}
+          onFork={() => void agentControls.fork()}
+          onSelectRun={control.selectRun}
+          onClose={() => setAgentControlOpen(false)}
+        />
       )}
       {checkpointOpen && control.runId && (
         <CheckpointBand
@@ -155,14 +195,15 @@ export default function App() {
           return created;
         }}
       />
-      {(checkpoints.notice || campaign.notice || pairedEval.notice || control.notice) && (
+      {(agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice) && (
         <div className="notice" role="status">
-          <span>{checkpoints.notice || campaign.notice || pairedEval.notice || control.notice}</span>
+          <span>{agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice}</span>
           <button
             className="icon-only"
             onClick={() => {
               campaign.setNotice(null);
               pairedEval.setNotice(null);
+              agentControls.setNotice(null);
               checkpoints.setNotice(null);
               control.setNotice(null);
             }}

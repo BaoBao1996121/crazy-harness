@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from crazy_harness.core.agents import AgentLoop, AssignmentContract, CompletionGate, NudgeBudget
+from crazy_harness.core.agents import (
+    AgentLoop,
+    AssignmentContract,
+    CompletionGate,
+    InjectedCrash,
+    NudgeBudget,
+)
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.capabilities import (
     CapabilityCatalog,
@@ -10,6 +16,7 @@ from crazy_harness.core.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
 )
+from crazy_harness.core.context import ContextBuilder
 from crazy_harness.core.events import Event, EventLog
 from crazy_harness.core.models import FakeModelProvider, ModelResponse
 from crazy_harness.core.prompts import PromptPack, RuntimeManifest
@@ -299,6 +306,133 @@ class _RecordingModel:
         return ModelResponse(content=self.response)
 
 
+def test_latest_nudge_survives_crash_before_the_physical_model_call(tmp_path):
+    class RecordingModel(FakeModelProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    json.dumps({"type": "continue", "reason": "continue after guidance"}),
+                    json.dumps({"type": "stop", "reason": "done"}),
+                ]
+            )
+            self.message_batches = []
+
+        def complete(self, messages, *, tools=None, response_schema=None):
+            self.message_batches.append(messages)
+            return super().complete(
+                messages,
+                tools=tools,
+                response_schema=response_schema,
+            )
+
+    class CrashBeforePhysicalCallAuthority:
+        def __init__(self, *, should_crash: bool) -> None:
+            self.should_crash = should_crash
+
+        def recover_unresolved(self, *, request_event):
+            return None
+
+        def complete(
+            self,
+            *,
+            request_event,
+            provider,
+            messages,
+            tools,
+            response_schema,
+        ):
+            if self.should_crash:
+                raise InjectedCrash("before_physical_model_call")
+            return provider.complete(
+                messages,
+                tools=tools,
+                response_schema=response_schema,
+            )
+
+        def reconcile(self, *, request_event, completion_event):
+            return False
+
+    event_log = EventLog(tmp_path / "events.jsonl")
+    event_log.append(
+        Event(run_id="r1", task_id="t1", type="assignment.created", source="coordinator")
+    )
+    old_nudge = event_log.append(
+        Event(
+            run_id="r1",
+            task_id="t1",
+            type="agent.nudge.set",
+            source="runtime.agent-control",
+            payload={"message": "OLD GUIDANCE"},
+        )
+    )
+    latest_nudge = event_log.append(
+        Event(
+            run_id="r1",
+            task_id="t1",
+            type="agent.nudge.set",
+            source="runtime.agent-control",
+            payload={
+                "message": "LATEST GUIDANCE",
+                "supersedes_event_id": old_nudge.id,
+            },
+        )
+    )
+    prompt_pack = PromptPack(
+        role_section="Generalist",
+        agent_card_section="Follow the latest guidance",
+        task_brief_section="Complete the assignment",
+        runtime_manifest=RuntimeManifest(
+            agent_id="generalist",
+            task_id="t1",
+            mode="scripted",
+        ),
+    )
+    model = RecordingModel()
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    interrupted = AgentLoop(
+        agent_id="generalist",
+        task_id="t1",
+        model=model,
+        event_log=event_log,
+        artifact_store=artifact_store,
+        tool_registry=ToolRegistry(),
+        context_builder=ContextBuilder(artifact_store=artifact_store),
+        prompt_pack=prompt_pack,
+        model_call_authority=CrashBeforePhysicalCallAuthority(should_crash=True),
+    )
+
+    with pytest.raises(InjectedCrash, match="before_physical_model_call"):
+        interrupted.run_once()
+
+    assert model.call_count == 0
+    persisted_request = next(
+        event for event in event_log.read_all() if event.type == "model.requested"
+    )
+    assert persisted_request.payload["active_nudge_event_id"] == latest_nudge.id
+
+    recovered = AgentLoop(
+        agent_id="generalist",
+        task_id="t1",
+        model=model,
+        event_log=EventLog(tmp_path / "events.jsonl"),
+        artifact_store=artifact_store,
+        tool_registry=ToolRegistry(),
+        context_builder=ContextBuilder(artifact_store=artifact_store),
+        prompt_pack=prompt_pack,
+        model_call_authority=CrashBeforePhysicalCallAuthority(should_crash=False),
+    )
+    recovered.run_once()
+    recovered.run_once()
+
+    first_real_prompt = "\n".join(
+        message.content for message in model.message_batches[0]
+    )
+    next_prompt = "\n".join(message.content for message in model.message_batches[1])
+    assert "LATEST GUIDANCE" in first_real_prompt
+    assert "OLD GUIDANCE" not in first_real_prompt
+    assert "LATEST GUIDANCE" not in next_prompt
+
+
 def _capability_compiler_for(tools: ToolRegistry) -> CapabilityCompiler:
     catalog = CapabilityCatalog()
     for spec in tools.specs():
@@ -356,12 +490,16 @@ def test_agent_loop_passes_only_compiled_capability_schemas_to_the_model(tmp_pat
 
     names = [tool["function"]["name"] for tool in model.received_tools or []]
     manifest_event = next(event for event in event_log.read_all() if event.type == "capability.manifest.compiled")
+    request_event = next(event for event in event_log.read_all() if event.type == "model.requested")
     system_prompt = next(message.content for message in model.received_messages if message.role == "system")
     assert names == ["repo.read"]
     assert "repo.read" in system_prompt
     assert "shell.admin" not in system_prompt
     assert manifest_event.payload["manifest"]["disclosed_names"] == ["repo.read"]
     assert manifest_event.payload["manifest"]["excluded_names"] == ["shell.admin"]
+    assert request_event.payload["capability_manifest_event_id"] == manifest_event.id
+    assert request_event.payload["capability_manifest_hash"] == manifest_event.payload["manifest"]["manifest_hash"]
+    assert request_event.payload["tool_schema_names"] == names
 
 
 def test_agent_loop_denies_a_registered_tool_that_was_not_disclosed_this_turn(tmp_path):
@@ -406,3 +544,32 @@ def test_agent_loop_denies_a_registered_tool_that_was_not_disclosed_this_turn(tm
     assert effects == []
     assert denied.payload["reason"] == "tool_not_disclosed"
     assert denied.payload["tool_name"] == "shell.admin"
+
+
+def test_system_pause_and_checkpoint_facts_do_not_wake_an_uncorrelated_wait():
+    waiting = Event(
+        run_id="r1",
+        task_id="t1",
+        type="agent.waiting",
+        source="agent.generalist",
+        payload={"turn_id": "turn_1", "condition": "await human evidence"},
+    )
+    administrative = [
+        Event(run_id="r1", task_id="t1", type="run.paused", source="runtime.single"),
+        Event(
+            run_id="r1",
+            task_id="t1",
+            type="checkpoint.committed",
+            source="checkpoint.service",
+        ),
+    ]
+    wake = Event(
+        run_id="r1",
+        task_id="t1",
+        type="agent.nudge.set",
+        source="runtime.agent-control",
+        payload={"message": "evidence arrived"},
+    )
+
+    assert AgentLoop._has_active_wait([waiting, *administrative]) is True
+    assert AgentLoop._has_active_wait([waiting, *administrative, wake]) is False

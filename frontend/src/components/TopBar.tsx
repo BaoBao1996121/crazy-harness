@@ -10,6 +10,7 @@ import {
   ListTodo,
   Radio,
   Scale,
+  SlidersHorizontal,
   Waves,
 } from "lucide-react";
 
@@ -22,10 +23,12 @@ interface TopBarProps {
   streamState: "connecting" | "live" | "reconnecting" | "offline";
   eventCount: number;
   busy: boolean;
+  agentControlAvailable: boolean;
   onNewRun: () => void;
   onNewEval: () => void;
   onNewCampaign: () => void;
   onCheckpoints: () => void;
+  onAgentControl: () => void;
   onCancel: () => void;
   onChaos: () => void;
 }
@@ -35,10 +38,12 @@ export function TopBar({
   streamState,
   eventCount,
   busy,
+  agentControlAvailable,
   onNewRun,
   onNewEval,
   onNewCampaign,
   onCheckpoints,
+  onAgentControl,
   onCancel,
   onChaos,
 }: TopBarProps) {
@@ -100,6 +105,17 @@ export function TopBar({
       </div>
 
       <div className="topbar-actions">
+        {run && agentControlAvailable && (
+          <button
+            className="icon-command control-command"
+            onClick={onAgentControl}
+            disabled={busy}
+            title="暂停、恢复、纠偏或派生 AgentRun / AgentRun controls"
+          >
+            <SlidersHorizontal size={17} aria-hidden="true" />
+            <span>运行控制</span>
+          </button>
+        )}
         {run && (
           <button
             className="icon-command secondary"

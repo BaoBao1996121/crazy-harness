@@ -5,8 +5,11 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from hashlib import sha256
+from inspect import getsource
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Literal
@@ -27,6 +30,13 @@ from crazy_harness.control_plane.eval_campaigns import (
     EvalCampaignRequest,
     EvalCampaignService,
 )
+from crazy_harness.control_plane.engineering_loops import (
+    ChildRunOutcome,
+    EngineeringLoopCreated,
+    EngineeringLoopReport,
+    EngineeringLoopRequest,
+    EngineeringLoopService,
+)
 from crazy_harness.control_plane.kernel import (
     CommandCandidate,
     CommandKind,
@@ -38,6 +48,15 @@ from crazy_harness.control_plane.kernel import (
 from crazy_harness.control_plane.model_governance import (
     ModelBudgetConfig,
     PersistentModelCallAuthority,
+)
+from crazy_harness.control_plane.run_controls import (
+    AgentRunBranchView,
+    RunControlResult,
+    RunForkRequest,
+    RunNudgeRequest,
+    RunNudgeResult,
+    RunPauseRequest,
+    RunResumeRequest,
 )
 from crazy_harness.control_plane.paired_evals import (
     EvalRunIdentity,
@@ -62,10 +81,21 @@ from crazy_harness.core.a2a.orchestration import (
     SupervisorPolicy,
     TeamContract,
 )
-from crazy_harness.core.agents import AgentLoop, AssignmentContract
+from crazy_harness.core.agents import (
+    AgentRunKind,
+    AgentRunSession,
+    AgentRunSessionIdentity,
+    AgentRunSessionView,
+    AssignmentContract,
+)
 from crazy_harness.core.artifacts import ArtifactStore
 from crazy_harness.core.checkpoints import CheckpointContract, WorkspaceSnapshotStore
 from crazy_harness.core.events import Event
+from crazy_harness.core.engineering_loops import (
+    CandidateProposal,
+    EngineeringIterationIdentity,
+    EngineeringLoopContract,
+)
 from crazy_harness.core.models import (
     DeepSeekOpenAIProvider,
     FakeModelProvider,
@@ -78,10 +108,12 @@ from crazy_harness.core.dispatch import (
     activate_dispatch_context,
 )
 from crazy_harness.core.runtime.mailbox import Delivery
+from crazy_harness.loop_packs import LoopPack, RepoQualityLoopPack
 from crazy_harness.taskpacks import (
     EvidenceResearchTaskPack,
     RepoMaintainerTaskPack,
     RepoMaintainerTeamTaskPack,
+    RepoQualityTaskPack,
     ResidentDemoTeamTaskPack,
     TaskPack,
 )
@@ -95,7 +127,13 @@ class TaskRequest(BaseModel):
     model_mode: Literal["scripted", "deepseek"] = "scripted"
     execution_mode: Literal["team", "single"] = "team"
     task_pack: (
-        Literal["resident-demo", "repo-maintainer", "evidence-research"] | None
+        Literal[
+            "resident-demo",
+            "repo-maintainer",
+            "evidence-research",
+            "repo-quality",
+        ]
+        | None
     ) = None
     model_budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
 
@@ -935,14 +973,25 @@ class ResidentScheduler:
         return sum(key[0] == worker_id for key in self._in_flight)
 
     def _pending_count_locked(self) -> int:
+        return len(self._dispatchable_pending_locked())
+
+    def _dispatchable_pending_locked(
+        self,
+    ) -> list[tuple[str, DurableMailbox, Delivery]]:
         claimed_deliveries = self._active_delivery_claim_keys()
-        return sum(
-            (worker_id, delivery.delivery_id) not in self._in_flight
-            and f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
-            not in claimed_deliveries
+        return [
+            (worker_id, mailbox, delivery)
             for worker_id, (mailbox, _, _) in self._workers.items()
             for delivery in mailbox.pending()
-        )
+            if (worker_id, delivery.delivery_id) not in self._in_flight
+            and f"delivery:{mailbox.mailbox_id}:{delivery.delivery_id}"
+            not in claimed_deliveries
+            and not self._delivery_deferred_by_run_control(delivery)
+        ]
+
+    def _delivery_deferred_by_run_control(self, delivery: Delivery) -> bool:
+        run = self.store.projection("run", delivery.event.run_id)
+        return bool(run and run.get("status") in {"pausing", "paused"})
 
     def _active_delivery_claim_keys(self) -> set[str]:
         current = datetime.now(timezone.utc)
@@ -956,7 +1005,8 @@ class ResidentScheduler:
     def _backpressure_locked(
         self,
     ) -> tuple[Event, str, dict[str, int]] | None:
-        queued = self._pending_count_locked()
+        pending = self._dispatchable_pending_locked()
+        queued = len(pending)
         if queued == 0:
             self._backpressure_signature = None
             return None
@@ -966,12 +1016,7 @@ class ResidentScheduler:
         signature: tuple[object, ...] = (queued, active_keys)
         if signature == self._backpressure_signature:
             return None
-        identity = next(
-            delivery.event
-            for worker_id, (mailbox, _, _) in self._workers.items()
-            for delivery in mailbox.pending()
-            if (worker_id, delivery.delivery_id) not in self._in_flight
-        )
+        identity = pending[0][2].event
         self._backpressure_signature = signature
         key = f"backpressure:{identity.id}:{':'.join(active_keys) or 'claim-conflict'}"
         return (
@@ -1225,6 +1270,7 @@ class ResidentRuntime:
         self.store = SQLiteEventStore(self.data_dir / "control_plane.db")
         self.eval_service = PairedEvalService(self.store)
         self.campaign_service = EvalCampaignService(self.store)
+        self.engineering_loop_service = EngineeringLoopService(self.store)
         self.model_call_authority = PersistentModelCallAuthority(self.store)
         self.artifacts = ArtifactStore(self.data_dir / "artifacts")
         self.checkpoint_snapshots = WorkspaceSnapshotStore(
@@ -1249,13 +1295,24 @@ class ResidentRuntime:
         self.supervisor_policy = supervisor_policy or CapabilitySupervisorPolicy()
         self.repo_maintainer_pack = RepoMaintainerTaskPack(self.data_dir)
         self.evidence_research_pack = EvidenceResearchTaskPack(self.data_dir)
+        self.repo_quality_pack = RepoQualityTaskPack(self.data_dir)
         self.task_packs: dict[str, TaskPack] = {
             self.repo_maintainer_pack.task_pack_id: self.repo_maintainer_pack,
             self.evidence_research_pack.task_pack_id: self.evidence_research_pack,
+            self.repo_quality_pack.task_pack_id: self.repo_quality_pack,
+        }
+        self.repo_quality_loop_pack = RepoQualityLoopPack(
+            self.data_dir,
+            task_pack=self.repo_quality_pack,
+            snapshots=self.checkpoint_snapshots,
+            artifacts=self.artifacts,
+        )
+        self.engineering_loop_packs: dict[str, LoopPack] = {
+            self.repo_quality_loop_pack.loop_pack_id: self.repo_quality_loop_pack,
         }
         self._model_factory = model_factory
         self._single_models: dict[str, ModelProvider] = {}
-        self._single_loops: dict[str, AgentLoop] = {}
+        self._single_sessions: dict[str, AgentRunSession] = {}
         self.mailboxes: dict[str, DurableMailbox] = {
             worker_id: DurableMailbox(worker_id, self.store)
             for worker_id in [
@@ -1355,8 +1412,17 @@ class ResidentRuntime:
                 self._reconcile_failed_runs()
                 stage = "cancellation_reconciliation"
                 self._reconcile_cancellations()
+                stage = "pause_reconciliation"
+                self._reconcile_pauses()
+                stage = "resume_reconciliation"
+                self._reconcile_resumes()
+                stage = "nudge_reconciliation"
+                self._reconcile_agent_nudges()
                 stage = "eval_control"
                 if self._advance_eval_control():
+                    continue
+                stage = "engineering_loop_control"
+                if self._advance_engineering_control():
                     continue
                 stage = "lease_expiry"
                 if self.expire_due_leases():
@@ -1502,6 +1568,23 @@ class ResidentRuntime:
 
         restore_key = f"{checkpoint_id}:{request.request_id}"
         identity = self.checkpoint_restore_identity(checkpoint_id, request.request_id)
+        committed = next(
+            (
+                event
+                for event in reversed(self.store.read_all(run_id=identity.run_id))
+                if event.type == "checkpoint.restore.committed"
+                and event.payload.get("checkpoint_id") == checkpoint_id
+                and event.payload.get("request_id") == request.request_id
+            ),
+            None,
+        )
+        if committed is not None:
+            return CheckpointRestored(
+                checkpoint_id=checkpoint_id,
+                source_run_id=contract.source.run_id,
+                run_id=identity.run_id,
+                task_id=identity.task_id,
+            )
         workspace = self.data_dir / "workspaces" / identity.run_id
         if workspace.exists():
             restored_snapshot = self.checkpoint_snapshots.create(workspace)
@@ -1565,6 +1648,76 @@ class ResidentRuntime:
             task_id=identity.task_id,
         )
 
+    def fork_agent_run(
+        self,
+        run_id: str,
+        request: RunForkRequest,
+    ) -> CheckpointRestored:
+        """Fork a verified single-Agent branch without copying hidden context."""
+
+        created = next(
+            (
+                event
+                for event in self.store.read_all(run_id=run_id)
+                if event.type == "run.created"
+            ),
+            None,
+        )
+        if created is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if created.payload.get("execution_mode") != "single":
+            raise ValueError(f"AgentRun fork currently requires single mode: {run_id}")
+        if created.payload.get("task_pack") != self.repo_maintainer_pack.task_pack_id:
+            raise ValueError("AgentRun fork currently supports repo-maintainer only")
+        checkpoint = self.create_checkpoint(
+            run_id,
+            CheckpointCreateRequest(
+                request_id=f"{request.request_id}:checkpoint",
+                label=request.label,
+            ),
+        )
+        return self.restore_checkpoint(
+            checkpoint.checkpoint_id,
+            CheckpointRestoreRequest(request_id=f"{request.request_id}:restore"),
+        )
+
+    def agent_run_branch(self, run_id: str) -> AgentRunBranchView:
+        """Rebuild one branch node from immutable checkpoint restore facts."""
+
+        if self.store.projection("run", run_id) is None:
+            raise KeyError(f"unknown run: {run_id}")
+        relations = self.store.read_all(event_type="checkpoint.restore.committed")
+        parent = next(
+            (event for event in reversed(relations) if event.run_id == run_id),
+            None,
+        )
+        children = tuple(
+            event.run_id
+            for event in relations
+            if event.payload.get("source_run_id") == run_id
+        )
+        return AgentRunBranchView(
+            run_id=run_id,
+            parent_run_id=(
+                str(parent.payload["source_run_id"]) if parent is not None else None
+            ),
+            checkpoint_id=(
+                str(parent.payload["checkpoint_id"]) if parent is not None else None
+            ),
+            source_event_id=(
+                str(parent.payload["source_event_id"]) if parent is not None else None
+            ),
+            source_turn_id=(
+                str(parent.payload["source_turn_id"])
+                if parent is not None and parent.payload.get("source_turn_id")
+                else None
+            ),
+            source_phase=(
+                str(parent.payload["source_phase"]) if parent is not None else None
+            ),
+            children_run_ids=children,
+        )
+
     @staticmethod
     def checkpoint_restore_identity(
         checkpoint_id: str,
@@ -1585,6 +1738,347 @@ class ResidentRuntime:
         if task_pack_id not in self.team_task_packs:
             raise ValueError(f"unsupported Team task pack: {task_pack_id}")
         return self._submit_team_task(request)
+
+    def pause_agent_run(
+        self,
+        run_id: str,
+        request: RunPauseRequest,
+    ) -> RunControlResult:
+        created = self._controllable_single_run(run_id)
+        request_event = self._append_deterministic(
+            created,
+            f"agent-run-pause-request:{run_id}:{request.request_id}",
+            "run.pause.requested",
+            request.model_dump(mode="json"),
+            source="runtime.agent-control",
+        )
+        self._reconcile_pause(run_id)
+        paused_event = next(
+            (
+                event
+                for event in reversed(self.store.read_all(run_id=run_id))
+                if event.type == "run.paused" and event.causation_id == request_event.id
+            ),
+            None,
+        )
+        self.scheduler.signal()
+        return RunControlResult(
+            run_id=run_id,
+            request_id=request.request_id,
+            action="pause",
+            status="paused" if paused_event is not None else "pausing",
+            request_event_id=request_event.id,
+            applied_event_id=paused_event.id if paused_event is not None else None,
+        )
+
+    def resume_agent_run(
+        self,
+        run_id: str,
+        request: RunResumeRequest,
+    ) -> RunControlResult:
+        self._controllable_single_run(run_id)
+        events = self.store.read_all(run_id=run_id)
+        existing = next(
+            (
+                event
+                for event in events
+                if event.type == "run.resume.requested"
+                and event.payload.get("request_id") == request.request_id
+            ),
+            None,
+        )
+        if existing is not None:
+            expected = request.model_dump(mode="json")
+            if any(existing.payload.get(key) != value for key, value in expected.items()):
+                raise ValueError(
+                    f"resume request_id belongs to another payload: {request.request_id}"
+                )
+            request_event = existing
+        else:
+            pause_request = self._active_operator_pause_request(events)
+            if pause_request is None:
+                raise ValueError(f"run has no active operator pause: {run_id}")
+            request_event = self._append_deterministic(
+                pause_request,
+                f"agent-run-resume-request:{run_id}:{request.request_id}",
+                "run.resume.requested",
+                request.model_dump(mode="json"),
+                source="runtime.agent-control",
+                causation_id=pause_request.id,
+            )
+        self._reconcile_resume(run_id)
+        resumed_event = next(
+            event
+            for event in reversed(self.store.read_all(run_id=run_id))
+            if event.type == "run.resumed" and event.causation_id == request_event.id
+        )
+        self.scheduler.signal()
+        self._reconcile_agent_nudges(run_id)
+        return RunControlResult(
+            run_id=run_id,
+            request_id=request.request_id,
+            action="resume",
+            status="running",
+            request_event_id=request_event.id,
+            applied_event_id=resumed_event.id,
+        )
+
+    def nudge_agent_run(
+        self,
+        run_id: str,
+        request: RunNudgeRequest,
+    ) -> RunNudgeResult:
+        created = self._controllable_single_run(run_id)
+        events = self.store.read_all(run_id=run_id)
+        existing = next(
+            (
+                event
+                for event in events
+                if event.type == "agent.nudge.set"
+                and event.payload.get("request_id") == request.request_id
+            ),
+            None,
+        )
+        if existing is None:
+            previous = next(
+                (event for event in reversed(events) if event.type == "agent.nudge.set"),
+                None,
+            )
+            nudge_event = self._append_deterministic(
+                created,
+                f"agent-run-nudge:{run_id}:{request.request_id}",
+                "agent.nudge.set",
+                {
+                    **request.model_dump(mode="json"),
+                    "agent_id": "generalist",
+                    "slot_policy": "latest_only",
+                    "supersedes_event_id": previous.id if previous is not None else None,
+                },
+                source="runtime.agent-control",
+            )
+        else:
+            nudge_event = existing
+            expected = request.model_dump(mode="json")
+            if any(nudge_event.payload.get(key) != value for key, value in expected.items()):
+                raise ValueError(
+                    f"nudge request_id belongs to another payload: {request.request_id}"
+                )
+        self._reconcile_agent_nudges(run_id)
+        return RunNudgeResult(
+            run_id=run_id,
+            request_id=request.request_id,
+            nudge_event_id=nudge_event.id,
+            supersedes_event_id=nudge_event.payload.get("supersedes_event_id"),
+        )
+
+    def agent_run_view(self, run_id: str) -> AgentRunSessionView:
+        """Project one single-Agent Run from durable events for UI and recovery."""
+
+        events = self.store.read_all(run_id=run_id)
+        created = next((event for event in events if event.type == "run.created"), None)
+        if created is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if created.payload.get("execution_mode") != "single":
+            raise ValueError(f"run is not a single-Agent Run: {run_id}")
+        task_pack_id = str(
+            created.payload.get("task_pack", self.repo_maintainer_pack.task_pack_id)
+        )
+        pack = self.task_packs.get(task_pack_id)
+        if pack is None:
+            raise RuntimeError(f"unsupported task pack: {task_pack_id}")
+        view = AgentRunSession.project_view(
+            AgentRunSessionIdentity(
+                run_id=created.run_id,
+                task_id=created.task_id,
+                agent_id=pack.agent_id,
+                kind=AgentRunKind.SINGLE,
+            ),
+            events,
+        )
+        if not view.fork_supported:
+            return view
+        blocker = (
+            "active Agent turn has not reached a checkpoint boundary"
+            if self._run_has_active_agent_claim(run_id)
+            else self.checkpoints.fork_blocker(run_id)
+        )
+        return replace(
+            view,
+            fork_ready=blocker is None,
+            fork_blocker=(
+                f"当前不是可派生的安全边界 / {blocker}"
+                if blocker is not None
+                else None
+            ),
+        )
+
+    def _controllable_single_run(self, run_id: str) -> Event:
+        events = self.store.read_all(run_id=run_id)
+        created = next((event for event in events if event.type == "run.created"), None)
+        if created is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if created.payload.get("execution_mode") != "single":
+            raise ValueError(f"AgentRun controls currently require single mode: {run_id}")
+        projection = self.store.projection("run", run_id) or {}
+        if projection.get("status") in {"succeeded", "failed", "cancelled", "cancelling"}:
+            raise ValueError(f"terminal run cannot be controlled: {run_id}")
+        return created
+
+    def _reconcile_pauses(self) -> bool:
+        changed = False
+        for run in self.store.snapshot().get("runs", []):
+            if run.get("status") == "pausing":
+                changed = self._reconcile_pause(str(run["run_id"])) or changed
+        return changed
+
+    def _reconcile_resumes(self) -> bool:
+        changed = False
+        for run in self.store.snapshot().get("runs", []):
+            if run.get("status") in {"succeeded", "failed", "cancelled", "cancelling"}:
+                continue
+            changed = self._reconcile_resume(str(run["run_id"])) or changed
+        return changed
+
+    def _reconcile_resume(self, run_id: str) -> bool:
+        events = self.store.read_all(run_id=run_id)
+        request_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type == "run.resume.requested"
+                and not any(
+                    later.type == "run.resumed" and later.causation_id == event.id
+                    for later in events
+                )
+            ),
+            None,
+        )
+        if request_event is None:
+            return False
+        request_index = events.index(request_event)
+        if any(
+            event.type == "run.pause.requested"
+            for event in events[request_index + 1 :]
+        ):
+            return False
+        pause_request = self._active_operator_pause_request(events[:request_index])
+        if pause_request is None:
+            raise ValueError(f"resume request has no active operator pause: {run_id}")
+        self._append_deterministic(
+            request_event,
+            f"agent-run-resumed:{run_id}:{request_event.payload['request_id']}",
+            "run.resumed",
+            {
+                "request_id": request_event.payload["request_id"],
+                "reason": request_event.payload.get("reason"),
+                "pause_request_id": pause_request.payload.get("request_id"),
+            },
+            source="runtime.agent-control",
+            causation_id=request_event.id,
+        )
+        return True
+
+    @staticmethod
+    def _active_operator_pause_request(events: list[Event]) -> Event | None:
+        last_resume_index = next(
+            (
+                index
+                for index in range(len(events) - 1, -1, -1)
+                if events[index].type == "run.resumed"
+            ),
+            -1,
+        )
+        return next(
+            (
+                events[index]
+                for index in range(len(events) - 1, last_resume_index, -1)
+                if events[index].type == "run.pause.requested"
+                and events[index].source == "runtime.agent-control"
+            ),
+            None,
+        )
+
+    def _reconcile_pause(self, run_id: str) -> bool:
+        projection = self.store.projection("run", run_id) or {}
+        if projection.get("status") != "pausing":
+            return False
+        now = datetime.now(timezone.utc)
+        if self._run_has_active_agent_claim(run_id, now=now):
+            return False
+        request_event = next(
+            (
+                event
+                for event in reversed(self.store.read_all(run_id=run_id))
+                if event.type == "run.pause.requested"
+            ),
+            None,
+        )
+        if request_event is None:
+            return False
+        self._append_deterministic(
+            request_event,
+            f"agent-run-paused:{run_id}:{request_event.id}",
+            "run.paused",
+            {
+                "request_id": request_event.payload.get("request_id"),
+                "reason": request_event.payload.get("reason"),
+                "boundary": "after_active_turn",
+            },
+            source="runtime.agent-control",
+            causation_id=request_event.id,
+        )
+        return True
+
+    def _reconcile_agent_nudges(self, run_id: str | None = None) -> bool:
+        changed = False
+        runs = self.store.snapshot().get("runs", [])
+        for run in runs:
+            current_run_id = str(run["run_id"])
+            if run_id is not None and current_run_id != run_id:
+                continue
+            if run.get("status") != "running":
+                continue
+            events = self.store.read_all(run_id=current_run_id)
+            nudge = next(
+                (event for event in reversed(events) if event.type == "agent.nudge.set"),
+                None,
+            )
+            if nudge is None or any(
+                event.type == "model.requested"
+                and event.payload.get("active_nudge_event_id") == nudge.id
+                for event in events
+            ):
+                continue
+            if self._run_has_active_agent_claim(current_run_id):
+                continue
+            mailbox = self.mailboxes["generalist"]
+            if any(
+                delivery.event.run_id == current_run_id
+                for delivery in mailbox.pending()
+            ):
+                continue
+            self._deliver(
+                "generalist",
+                nudge,
+                delivery_id=f"agent-control:nudge:{nudge.id}",
+            )
+            changed = True
+        return changed
+
+    def _run_has_active_agent_claim(
+        self,
+        run_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        current = now or datetime.now(timezone.utc)
+        return any(
+            claim["state"] == "active"
+            and str(claim["claim_key"]).startswith("agent-run:")
+            and run_id in str(claim["claim_key"])
+            and datetime.fromisoformat(str(claim["expires_at"])) > current
+            for claim in self.store.list_work_claims()
+        )
 
     def create_paired_eval(
         self,
@@ -1684,6 +2178,251 @@ class ResidentRuntime:
         return self.campaign_service.cancel(
             campaign_id,
             cancel_pair=cancel_pair,
+        )
+
+    def create_engineering_loop(
+        self,
+        request: EngineeringLoopRequest,
+    ) -> EngineeringLoopCreated:
+        """Persist a frozen outer-loop contract; execution remains scheduler-driven."""
+
+        loop_pack = self.engineering_loop_packs.get(request.loop_pack)
+        if loop_pack is None:
+            raise ValueError(f"unsupported engineering loop pack: {request.loop_pack}")
+        if request.worker.execution_mode != "single":
+            raise ValueError("repo-quality v1 supports single-Agent child runs only")
+        if request.worker.task_pack != loop_pack.task_pack.task_pack_id:
+            raise ValueError(
+                "engineering worker task_pack must match its registered loop pack"
+            )
+        if frozenset(request.permissions) != loop_pack.required_permissions:
+            raise ValueError(
+                "engineering loop permissions must exactly match the LoopPack grant"
+            )
+        if request.initial_state_ref != "loop-pack://initial":
+            if not request.initial_state_ref.startswith("snapshot://"):
+                raise ValueError("engineering initial state must be a LoopPack or snapshot ref")
+            self.checkpoint_snapshots.verify(
+                request.initial_state_ref.removeprefix("snapshot://")
+            )
+        created = self.engineering_loop_service.create(request)
+        self._persist_engineering_loop_pack_authorization(created, loop_pack)
+        self.scheduler.signal()
+        return created
+
+    def engineering_loop(self, loop_id: str) -> EngineeringLoopReport:
+        return self.engineering_loop_service.report(loop_id)
+
+    def engineering_loops(self) -> list[EngineeringLoopReport]:
+        return self.engineering_loop_service.list_reports()
+
+    def _advance_engineering_control(self) -> bool:
+        """Advance at most one durable parent phase per scheduler cycle."""
+
+        for report in self.engineering_loop_service.list_reports():
+            if report.status != "running":
+                continue
+            loop_pack = self.engineering_loop_packs.get(report.contract.loop_pack)
+            if loop_pack is None:
+                raise RuntimeError(
+                    f"persisted engineering loop uses an unknown pack: "
+                    f"{report.contract.loop_pack}"
+                )
+            self._assert_engineering_loop_pack_authorized(
+                report.contract,
+                loop_pack,
+            )
+            return self.engineering_loop_service.advance_one(
+                report.loop_id,
+                propose=loop_pack.propose,
+                launch_child=lambda contract, identity, candidate: (
+                    self._launch_engineering_child(
+                        loop_pack,
+                        contract,
+                        identity,
+                        candidate,
+                    )
+                ),
+                child_outcome=self._engineering_child_outcome,
+                evaluate=loop_pack.evaluate,
+            )
+        return False
+
+    def _persist_engineering_loop_pack_authorization(
+        self,
+        created: EngineeringLoopCreated,
+        loop_pack: LoopPack,
+    ) -> None:
+        events = self.store.read_all(run_id=created.loop_id)
+        authorizations = [
+            event
+            for event in events
+            if event.type == "engineering.loop_pack.authorized"
+        ]
+        if not authorizations:
+            contract_event = next(
+                event for event in events if event.type == "engineering.loop.created"
+            )
+            self._append_deterministic(
+                contract_event,
+                f"engineering-loop-pack-authorized:{created.loop_id}",
+                "engineering.loop_pack.authorized",
+                self._loop_pack_authorization(loop_pack),
+                source="runtime.engineering-loop",
+            )
+        self._assert_engineering_loop_pack_authorized(created.contract, loop_pack)
+
+    def _assert_engineering_loop_pack_authorized(
+        self,
+        contract: EngineeringLoopContract,
+        loop_pack: LoopPack,
+    ) -> None:
+        authorizations = [
+            event
+            for event in self.store.read_all(run_id=contract.loop_id)
+            if event.type == "engineering.loop_pack.authorized"
+        ]
+        if len(authorizations) != 1:
+            raise RuntimeError(
+                "LoopPack authorization is missing or ambiguous for persisted loop: "
+                f"{contract.loop_id}"
+            )
+        current = self._loop_pack_authorization(loop_pack)
+        if authorizations[0].payload != current:
+            raise RuntimeError(
+                "LoopPack authorization drifted since loop creation: "
+                f"{contract.loop_id}"
+            )
+        if (
+            contract.loop_pack != current["loop_pack_id"]
+            or contract.worker.task_pack != current["task_pack_id"]
+            or frozenset(contract.permissions)
+            != frozenset(current["required_permissions"])
+        ):
+            raise RuntimeError(
+                "LoopPack authorization no longer matches the persisted contract: "
+                f"{contract.loop_id}"
+            )
+
+    @staticmethod
+    def _loop_pack_authorization(loop_pack: LoopPack) -> dict[str, object]:
+        declared_version = getattr(loop_pack, "pack_version", None)
+        try:
+            implementation_hash = sha256(
+                getsource(type(loop_pack)).encode("utf-8")
+            ).hexdigest()
+        except (OSError, TypeError):
+            implementation_hash = None
+        if declared_version is None and implementation_hash is None:
+            raise RuntimeError(
+                "LoopPack authorization requires pack_version or inspectable source"
+            )
+        return {
+            "loop_pack_id": loop_pack.loop_pack_id,
+            "implementation_identity": (
+                f"{type(loop_pack).__module__}.{type(loop_pack).__qualname__}"
+            ),
+            "implementation_version": str(
+                declared_version or f"source:{implementation_hash}"
+            ),
+            "implementation_hash": implementation_hash,
+            "task_pack_id": loop_pack.task_pack.task_pack_id,
+            "required_permissions": sorted(loop_pack.required_permissions),
+        }
+
+    def _launch_engineering_child(
+        self,
+        loop_pack: LoopPack,
+        contract: EngineeringLoopContract,
+        identity: EngineeringIterationIdentity,
+        candidate: CandidateProposal,
+    ) -> None:
+        """Idempotently prepare and release the canonical child AgentRun."""
+
+        request = TaskRequest(
+            title=f"{contract.title} / iteration {identity.iteration}",
+            brief=(
+                f"Parent objective: {contract.objective}\n"
+                f"Candidate intent: {candidate.change_set}\n"
+                f"Expected effect: {candidate.expected_effect}"
+            ),
+            model_mode=contract.worker.model_mode,
+            execution_mode="single",
+            task_pack=contract.worker.task_pack,
+            model_budget=ModelBudgetConfig.model_validate(
+                contract.worker.model_budget
+            ),
+        )
+        run_identity = EvalRunIdentity(
+            run_id=identity.child_run_id,
+            task_id=identity.child_task_id,
+        )
+        self._prepare_single_task(
+            request,
+            run_identity,
+            assignment_contract=loop_pack.task_pack.assignment_contract(),
+            workspace_state_ref=candidate.base_state_ref,
+            run_metadata={
+                "engineering_loop_id": contract.loop_id,
+                "engineering_iteration": identity.iteration,
+                "engineering_iteration_id": identity.iteration_id,
+                "engineering_candidate_id": candidate.candidate_id,
+                "engineering_base_state_ref": candidate.base_state_ref,
+            },
+        )
+        self._release_prepared_task("single", run_identity)
+
+    def _engineering_child_outcome(
+        self,
+        identity: EngineeringIterationIdentity,
+    ) -> ChildRunOutcome | None:
+        run = self.store.projection("run", identity.child_run_id)
+        if run is None or run.get("status") not in {
+            "succeeded",
+            "failed",
+            "cancelled",
+        }:
+            return None
+        events = self.store.read_all(run_id=identity.child_run_id)
+        terminal = next(
+            event
+            for event in reversed(events)
+            if event.type in {"run.succeeded", "run.failed", "run.cancelled"}
+        )
+        status = str(run["status"])
+        raw_candidate_state_ref = terminal.payload.get("candidate_state_ref")
+        candidate_state_ref: str | None
+        if raw_candidate_state_ref is None and status != "succeeded":
+            candidate_state_ref = None
+        elif isinstance(raw_candidate_state_ref, str) and raw_candidate_state_ref.startswith(
+            "snapshot://"
+        ):
+            candidate_state_ref = raw_candidate_state_ref
+            self.checkpoint_snapshots.verify(
+                candidate_state_ref.removeprefix("snapshot://")
+            )
+        else:
+            raise RuntimeError("engineering child terminal has no valid candidate snapshot")
+        evidence_events = [
+            event
+            for event in events
+            if event.type in {
+                "completion.gate.passed",
+                "tool.completed",
+                "agent.submitted",
+                terminal.type,
+            }
+        ]
+        evidence_refs = tuple(f"event://{event.id}" for event in evidence_events)
+        if not evidence_refs:
+            evidence_refs = (f"event://{terminal.id}",)
+        return ChildRunOutcome(
+            run_id=identity.child_run_id,
+            task_id=identity.child_task_id,
+            status=status,
+            terminal_event_id=terminal.id,
+            candidate_state_ref=candidate_state_ref,
+            evidence_refs=evidence_refs,
         )
 
     def _advance_eval_control(self) -> bool:
@@ -2094,7 +2833,7 @@ class ResidentRuntime:
                     "model_budget": request.model_budget.model_dump(mode="json"),
                     "model_profile": model_profile,
                     "supervisor_policy": type(self.supervisor_policy).__name__,
-                    "behavior_version": "v0.9.0-dev",
+                    "behavior_version": "v0.10.0-dev",
                     **task_metadata,
                 },
             )
@@ -2134,6 +2873,8 @@ class ResidentRuntime:
         restore_contract: CheckpointContract | None = None,
         assignment_contract: AssignmentContract | None = None,
         source_run_created: Event | None = None,
+        workspace_state_ref: str | None = None,
+        run_metadata: dict[str, object] | None = None,
     ) -> RunCreated:
         task_pack_id = request.task_pack or self.repo_maintainer_pack.task_pack_id
         pack = self.task_packs.get(task_pack_id)
@@ -2143,7 +2884,43 @@ class ResidentRuntime:
             raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
         run_id = identity.run_id
         task_id = identity.task_id
-        prepared = pack.prepare(run_id)
+        existing_events = self.store.read_all(run_id=run_id)
+        existing_created = next(
+            (event for event in existing_events if event.type == "run.created"),
+            None,
+        )
+        existing_assignment = next(
+            (event for event in existing_events if event.type == "assignment.created"),
+            None,
+        )
+        if existing_created is not None and existing_assignment is not None:
+            expected_metadata = run_metadata or {}
+            if (
+                existing_created.task_id != task_id
+                or existing_created.payload.get("task_pack") != task_pack_id
+                or existing_created.payload.get("model_mode") != request.model_mode
+                or any(
+                    existing_created.payload.get(key) != value
+                    for key, value in expected_metadata.items()
+                )
+            ):
+                raise RuntimeError(
+                    f"persisted single-Agent child conflicts with retry: {run_id}"
+                )
+            return RunCreated(run_id=run_id, task_id=task_id)
+
+        if restore_contract is not None and workspace_state_ref is not None:
+            raise ValueError("checkpoint restore and engineering state are mutually exclusive")
+        if workspace_state_ref is not None:
+            if not isinstance(pack, RepoQualityTaskPack):
+                raise ValueError("engineering workspace state requires repo-quality")
+            prepared = pack.prepare_from_state(
+                run_id,
+                workspace_state_ref,
+                self.checkpoint_snapshots,
+            )
+        else:
+            prepared = pack.prepare(run_id)
         model_profile = self._requested_model_profile(request, task_pack_id)
         if restore_contract is not None:
             if not isinstance(pack, RepoMaintainerTaskPack) or source_run_created is None:
@@ -2162,6 +2939,23 @@ class ResidentRuntime:
                 ),
                 "input_hash": str(source_run_created.payload.get("input_hash", "restored")),
                 "restored_workspace_hash": restore_contract.workspace.object_id,
+            }
+        elif workspace_state_ref is not None:
+            assert isinstance(pack, RepoQualityTaskPack)
+            expected_hash = (
+                pack.fixture_hash()
+                if workspace_state_ref == "loop-pack://initial"
+                else workspace_state_ref.removeprefix("snapshot://")
+            )
+            if pack.workspace_hash(prepared.workspace) != expected_hash:
+                raise RuntimeError("engineering child workspace does not match Active state")
+            if pack.workspace_hash(prepared.baseline) != expected_hash:
+                raise RuntimeError("engineering child baseline does not match Active state")
+            case_metadata = {
+                "case_id": pack.case_id,
+                "fixture_hash": expected_hash,
+                "scorer_version": pack.scorer_version,
+                "engineering_base_state_ref": workspace_state_ref,
             }
         else:
             case_metadata = (
@@ -2182,6 +2976,18 @@ class ResidentRuntime:
                 ),
                 str(fixture_hash),
             )
+        metadata = dict(run_metadata or {})
+        reserved_metadata = {
+            "title",
+            "brief",
+            "model_mode",
+            "execution_mode",
+            "task_pack",
+            "workspace_path",
+            "baseline_path",
+        }
+        if reserved_metadata.intersection(metadata):
+            raise ValueError("run_metadata cannot replace canonical Run fields")
         created = self.store.append(
             Event(
                 id=str(uuid5(NAMESPACE_URL, f"crazy:run:{run_id}:created")),
@@ -2203,7 +3009,7 @@ class ResidentRuntime:
                         if hasattr(prepared, "baseline")
                         else prepared.workspace
                     ),
-                    "behavior_version": "v0.9.0-dev",
+                    "behavior_version": "v0.10.0-dev",
                     **(
                         {
                             "restored_from_checkpoint_id": restore_contract.checkpoint_id,
@@ -2213,6 +3019,7 @@ class ResidentRuntime:
                         else {}
                     ),
                     **case_metadata,
+                    **metadata,
                 },
             )
         )
@@ -2236,7 +3043,9 @@ class ResidentRuntime:
                     "receiver": pack.agent_id,
                     "workspace_path": str(prepared.workspace),
                     **(
-                        {"release_policy": "paired_eval_commit"}
+                        {"release_policy": "checkpoint_restore_commit"}
+                        if restore_contract is not None
+                        else {"release_policy": "paired_eval_commit"}
                         if hold_for_paired_commit
                         else {}
                     ),
@@ -2274,17 +3083,28 @@ class ResidentRuntime:
     def run_until_idle(self, *, max_steps: int = 100) -> int:
         started_at = self.scheduler.completed_steps
         waits_without_progress = 0
-        eval_control_steps = 0
+        control_steps = 0
         while self.scheduler.completed_steps - started_at < max_steps:
             self._reconcile_routes()
             self._reconcile_failed_runs()
             self._reconcile_cancellations()
+            self._reconcile_pauses()
+            self._reconcile_resumes()
+            self._reconcile_agent_nudges()
             if self._advance_eval_control():
-                eval_control_steps += 1
+                control_steps += 1
                 waits_without_progress = 0
-                if eval_control_steps >= max_steps:
+                if control_steps >= max_steps:
                     raise RuntimeError(
                         f"eval control did not become idle after {max_steps} steps"
+                    )
+                continue
+            if self._advance_engineering_control():
+                control_steps += 1
+                waits_without_progress = 0
+                if control_steps >= max_steps:
+                    raise RuntimeError(
+                        f"engineering control did not become idle after {max_steps} steps"
                     )
                 continue
             if self.scheduler.run_once():
@@ -2657,14 +3477,14 @@ class ResidentRuntime:
                 max_tokens=int(profile.get("max_output_tokens", 4096)),
             )
         if model_mode == "scripted":
-            return FakeModelProvider(task_pack.scripted_responses())
+            return FakeModelProvider(task_pack.scripted_responses(run_metadata=None))
         raise ValueError(f"unsupported model mode: {model_mode}")
 
     def _single_agent_step(self, delivery: Delivery) -> None:
         trigger = delivery.event
         try:
-            loop = self._single_loop_for(trigger)
-            loop.run_once()
+            session = self._single_session_for(trigger)
+            session.step()
         except InjectedKernelCrash:
             raise
         except Exception as exc:
@@ -2725,7 +3545,9 @@ class ResidentRuntime:
 
         completed_turns = sum(event.type == "model.completed" for event in events)
         max_turns = (
-            loop.assignment_contract.budgets.turns if loop.assignment_contract else 20
+            session.loop.assignment_contract.budgets.turns
+            if session.loop.assignment_contract
+            else 20
         )
         if max_turns is not None and completed_turns >= max_turns:
             failed = self._append_deterministic(
@@ -2761,8 +3583,8 @@ class ResidentRuntime:
             delivery_id=f"single:{trigger.task_id}:turn:{completed_turns + 1}",
         )
 
-    def _single_loop_for(self, trigger: Event) -> AgentLoop:
-        existing = self._single_loops.get(trigger.task_id)
+    def _single_session_for(self, trigger: Event) -> AgentRunSession:
+        existing = self._single_sessions.get(trigger.task_id)
         if existing is not None:
             return existing
         events = self.store.read_all(task_id=trigger.task_id)
@@ -2793,7 +3615,9 @@ class ResidentRuntime:
         model = self._single_models.get(trigger.task_id)
         if model is None:
             if model_mode == "scripted" and self._model_factory is None:
-                responses = pack.scripted_responses()
+                responses = pack.scripted_responses(
+                    run_metadata=dict(created.payload)
+                )
                 completed = sum(
                     event.type == "model.completed" for event in events
                 )
@@ -2822,12 +3646,34 @@ class ResidentRuntime:
             fault_injector=self.faults.trip,
         )
         loop.model_call_authority = self.model_call_authority
-        self._single_loops[trigger.task_id] = loop
-        return loop
+        session = AgentRunSession(
+            identity=AgentRunSessionIdentity(
+                run_id=trigger.run_id,
+                task_id=trigger.task_id,
+                agent_id=pack.agent_id,
+                kind=AgentRunKind.SINGLE,
+            ),
+            loop=loop,
+        )
+        self._single_sessions[trigger.task_id] = session
+        return session
 
     def _finish_single_run(
         self, trigger: Event, *, succeeded: bool, reason: str
     ) -> None:
+        created = next(
+            event
+            for event in self.store.read_all(run_id=trigger.run_id)
+            if event.type == "run.created"
+        )
+        terminal_payload: dict[str, object] = {
+            "reason": reason,
+            "agent_id": "generalist",
+        }
+        if succeeded and created.payload.get("engineering_loop_id"):
+            workspace = Path(str(created.payload["workspace_path"]))
+            snapshot = self.checkpoint_snapshots.create(workspace)
+            terminal_payload["candidate_state_ref"] = f"snapshot://{snapshot.object_id}"
         assignment_type = "assignment.completed" if succeeded else "assignment.failed"
         assignment = self._append_deterministic(
             trigger,
@@ -2837,6 +3683,11 @@ class ResidentRuntime:
                 "assignment_id": trigger.task_id,
                 "agent_id": "generalist",
                 "reason": reason,
+                **(
+                    {"candidate_state_ref": terminal_payload["candidate_state_ref"]}
+                    if "candidate_state_ref" in terminal_payload
+                    else {}
+                ),
             },
             source="runtime.single",
         )
@@ -2845,7 +3696,7 @@ class ResidentRuntime:
             assignment,
             f"single-run-terminal:{trigger.run_id}:{run_type}",
             run_type,
-            {"reason": reason, "agent_id": "generalist"},
+            terminal_payload,
             source="runtime.single",
         )
 
@@ -3443,6 +4294,11 @@ class ResidentRuntime:
                 and not self._paired_assignment_is_committed(event)
             ):
                 return False
+            if (
+                event.payload.get("release_policy") == "checkpoint_restore_commit"
+                and not self._checkpoint_restore_assignment_is_committed(event)
+            ):
+                return False
             receiver = event.payload.get("agent_id")
         elif event.type in {
             "agent.result.submitted",
@@ -3550,6 +4406,21 @@ class ResidentRuntime:
             for event in eval_events
         )
         return committed and released
+
+    def _checkpoint_restore_assignment_is_committed(
+        self,
+        assignment: Event,
+    ) -> bool:
+        events = self.store.read_all(run_id=assignment.run_id)
+        created = next((event for event in events if event.type == "run.created"), None)
+        if created is None:
+            return False
+        checkpoint_id = created.payload.get("restored_from_checkpoint_id")
+        return isinstance(checkpoint_id, str) and any(
+            event.type == "checkpoint.restore.committed"
+            and event.payload.get("checkpoint_id") == checkpoint_id
+            for event in events
+        )
 
     def _queue_dream(self, succeeded: Event) -> None:
         signal = self._append_deterministic(

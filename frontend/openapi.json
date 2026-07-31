@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Crazy Resident A2A Control Plane",
-    "version": "0.9.0-dev"
+    "version": "0.10.0-dev"
   },
   "paths": {
     "/api/health": {
@@ -510,6 +510,390 @@
         }
       }
     },
+    "/api/runs/{run_id}/agent-run": {
+      "get": {
+        "summary": "Get Agent Run",
+        "operationId": "get_agent_run_api_runs__run_id__agent_run_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunSessionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AgentRun unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/controls/pause": {
+      "post": {
+        "summary": "Pause Agent Run",
+        "operationId": "pause_agent_run_api_runs__run_id__controls_pause_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunPauseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pause conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/controls/resume": {
+      "post": {
+        "summary": "Resume Agent Run",
+        "operationId": "resume_agent_run_api_runs__run_id__controls_resume_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunResumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resume conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/controls/nudge": {
+      "post": {
+        "summary": "Nudge Agent Run",
+        "operationId": "nudge_agent_run_api_runs__run_id__controls_nudge_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunNudgeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNudgeResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nudge conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/forks": {
+      "post": {
+        "summary": "Fork Agent Run",
+        "operationId": "fork_agent_run_api_runs__run_id__forks_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunForkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointRestored"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Fork conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/branch": {
+      "get": {
+        "summary": "Get Agent Run Branch",
+        "operationId": "get_agent_run_branch_api_runs__run_id__branch_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunBranchView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AgentRun not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/{run_id}/checkpoints": {
       "post": {
         "summary": "Create Checkpoint",
@@ -965,6 +1349,213 @@
   },
   "components": {
     "schemas": {
+      "AgentRunBranchView": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Run Id"
+          },
+          "checkpoint_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint Id"
+          },
+          "source_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Event Id"
+          },
+          "source_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Turn Id"
+          },
+          "source_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Phase"
+          },
+          "children_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Children Run Ids",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "AgentRunBranchView"
+      },
+      "AgentRunKind": {
+        "type": "string",
+        "enum": [
+          "single",
+          "assignment",
+          "peer"
+        ],
+        "title": "AgentRunKind",
+        "description": "The control-plane role played by one isolated AgentRun."
+      },
+      "AgentRunSessionIdentity": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AgentRunKind"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "task_id",
+          "agent_id",
+          "kind"
+        ],
+        "title": "AgentRunSessionIdentity"
+      },
+      "AgentRunSessionView": {
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/AgentRunSessionIdentity"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentRunStatus"
+          },
+          "completed_turns": {
+            "type": "integer",
+            "title": "Completed Turns"
+          },
+          "latest_phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoopPhase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_event_id": {
+            "type": "string",
+            "title": "Latest Event Id"
+          },
+          "latest_event_type": {
+            "type": "string",
+            "title": "Latest Event Type"
+          },
+          "capability_manifest_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Manifest Hash"
+          },
+          "fork_supported": {
+            "type": "boolean",
+            "title": "Fork Supported"
+          },
+          "fork_ready": {
+            "type": "boolean",
+            "title": "Fork Ready"
+          },
+          "fork_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork Blocker"
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "status",
+          "completed_turns",
+          "latest_phase",
+          "latest_event_id",
+          "latest_event_type",
+          "capability_manifest_hash",
+          "fork_supported",
+          "fork_ready",
+          "fork_blocker"
+        ],
+        "title": "AgentRunSessionView"
+      },
+      "AgentRunStatus": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "running",
+          "pausing",
+          "paused",
+          "waiting",
+          "blocked",
+          "cancelling",
+          "cancelled",
+          "completed",
+          "failed"
+        ],
+        "title": "AgentRunStatus",
+        "description": "A durable projection of an AgentRun, never a second source of truth."
+      },
       "AgentView": {
         "properties": {
           "agent_id": {
@@ -2874,6 +3465,21 @@
         ],
         "title": "LeaseView"
       },
+      "LoopPhase": {
+        "type": "string",
+        "enum": [
+          "context_building",
+          "model_calling",
+          "decision_validating",
+          "action_authorizing",
+          "action_executing",
+          "result_recording",
+          "waiting",
+          "submitted",
+          "failed"
+        ],
+        "title": "LoopPhase"
+      },
       "MemoryView": {
         "properties": {
           "candidate_id": {
@@ -3753,6 +4359,60 @@
         ],
         "title": "RepoMaintainerScore"
       },
+      "RunControlResult": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "resume"
+            ],
+            "title": "Action"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pausing",
+              "paused",
+              "running"
+            ],
+            "title": "Status"
+          },
+          "request_event_id": {
+            "type": "string",
+            "title": "Request Event Id"
+          },
+          "applied_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "request_id",
+          "action",
+          "status",
+          "request_event_id"
+        ],
+        "title": "RunControlResult"
+      },
       "RunCreated": {
         "properties": {
           "run_id": {
@@ -3775,6 +4435,142 @@
           "task_id"
         ],
         "title": "RunCreated"
+      },
+      "RunForkRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 96,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "RunForkRequest"
+      },
+      "RunNudgeRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "message"
+        ],
+        "title": "RunNudgeRequest"
+      },
+      "RunNudgeResult": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "pending_next_turn",
+            "title": "Status",
+            "default": "pending_next_turn"
+          },
+          "nudge_event_id": {
+            "type": "string",
+            "title": "Nudge Event Id"
+          },
+          "supersedes_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "request_id",
+          "nudge_event_id"
+        ],
+        "title": "RunNudgeResult"
+      },
+      "RunPauseRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "title": "RunPauseRequest"
+      },
+      "RunResumeRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "title": "RunResumeRequest"
       },
       "RunTraceMetrics": {
         "properties": {
@@ -4197,7 +4993,8 @@
                 "enum": [
                   "resident-demo",
                   "repo-maintainer",
-                  "evidence-research"
+                  "evidence-research",
+                  "repo-quality"
                 ]
               },
               {

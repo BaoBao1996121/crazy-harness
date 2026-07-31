@@ -193,6 +193,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/agent-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agent Run */
+        get: operations["get_agent_run_api_runs__run_id__agent_run_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/controls/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Agent Run */
+        post: operations["pause_agent_run_api_runs__run_id__controls_pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/controls/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Agent Run */
+        post: operations["resume_agent_run_api_runs__run_id__controls_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/controls/nudge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Nudge Agent Run */
+        post: operations["nudge_agent_run_api_runs__run_id__controls_nudge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/forks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fork Agent Run */
+        post: operations["fork_agent_run_api_runs__run_id__forks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/branch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agent Run Branch */
+        get: operations["get_agent_run_branch_api_runs__run_id__branch_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/checkpoints": {
         parameters: {
             query?: never;
@@ -351,6 +453,68 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentRunBranchView */
+        AgentRunBranchView: {
+            /** Run Id */
+            run_id: string;
+            /** Parent Run Id */
+            parent_run_id?: string | null;
+            /** Checkpoint Id */
+            checkpoint_id?: string | null;
+            /** Source Event Id */
+            source_event_id?: string | null;
+            /** Source Turn Id */
+            source_turn_id?: string | null;
+            /** Source Phase */
+            source_phase?: string | null;
+            /**
+             * Children Run Ids
+             * @default []
+             */
+            children_run_ids: string[];
+        };
+        /**
+         * AgentRunKind
+         * @description The control-plane role played by one isolated AgentRun.
+         * @enum {string}
+         */
+        AgentRunKind: "single" | "assignment" | "peer";
+        /** AgentRunSessionIdentity */
+        AgentRunSessionIdentity: {
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Agent Id */
+            agent_id: string;
+            kind: components["schemas"]["AgentRunKind"];
+        };
+        /** AgentRunSessionView */
+        AgentRunSessionView: {
+            identity: components["schemas"]["AgentRunSessionIdentity"];
+            status: components["schemas"]["AgentRunStatus"];
+            /** Completed Turns */
+            completed_turns: number;
+            latest_phase: components["schemas"]["LoopPhase"] | null;
+            /** Latest Event Id */
+            latest_event_id: string;
+            /** Latest Event Type */
+            latest_event_type: string;
+            /** Capability Manifest Hash */
+            capability_manifest_hash: string | null;
+            /** Fork Supported */
+            fork_supported: boolean;
+            /** Fork Ready */
+            fork_ready: boolean;
+            /** Fork Blocker */
+            fork_blocker: string | null;
+        };
+        /**
+         * AgentRunStatus
+         * @description A durable projection of an AgentRun, never a second source of truth.
+         * @enum {string}
+         */
+        AgentRunStatus: "ready" | "running" | "pausing" | "paused" | "waiting" | "blocked" | "cancelling" | "cancelled" | "completed" | "failed";
         /** AgentView */
         AgentView: {
             /** Agent Id */
@@ -1144,6 +1308,11 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * LoopPhase
+         * @enum {string}
+         */
+        LoopPhase: "context_building" | "model_calling" | "decision_validating" | "action_authorizing" | "action_executing" | "result_recording" | "waiting" | "submitted" | "failed";
         /** MemoryView */
         MemoryView: {
             /** Candidate Id */
@@ -1492,6 +1661,27 @@ export interface components {
              */
             test_output: string;
         };
+        /** RunControlResult */
+        RunControlResult: {
+            /** Run Id */
+            run_id: string;
+            /** Request Id */
+            request_id: string;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pausing" | "paused" | "running";
+            /** Request Event Id */
+            request_event_id: string;
+            /** Applied Event Id */
+            applied_event_id?: string | null;
+        };
         /** RunCreated */
         RunCreated: {
             /** Run Id */
@@ -1503,6 +1693,54 @@ export interface components {
              * @default queued
              */
             status: string;
+        };
+        /** RunForkRequest */
+        RunForkRequest: {
+            /** Request Id */
+            request_id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /** RunNudgeRequest */
+        RunNudgeRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Message */
+            message: string;
+        };
+        /** RunNudgeResult */
+        RunNudgeResult: {
+            /** Run Id */
+            run_id: string;
+            /** Request Id */
+            request_id: string;
+            /**
+             * Status
+             * @default pending_next_turn
+             * @constant
+             */
+            status: "pending_next_turn";
+            /** Nudge Event Id */
+            nudge_event_id: string;
+            /** Supersedes Event Id */
+            supersedes_event_id?: string | null;
+        };
+        /** RunPauseRequest */
+        RunPauseRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /** RunResumeRequest */
+        RunResumeRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * RunTraceMetrics
@@ -1659,7 +1897,7 @@ export interface components {
              */
             execution_mode: "team" | "single";
             /** Task Pack */
-            task_pack?: ("resident-demo" | "repo-maintainer" | "evidence-research") | null;
+            task_pack?: ("resident-demo" | "repo-maintainer" | "evidence-research" | "repo-quality") | null;
             model_budget?: components["schemas"]["ModelBudgetConfig"];
         };
         /** TeamRecommendationDecision */
@@ -2182,6 +2420,307 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CancelResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_run_api_runs__run_id__agent_run_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunSessionView"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description AgentRun unavailable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pause_agent_run_api_runs__run_id__controls_pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunPauseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunControlResult"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Pause conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_agent_run_api_runs__run_id__controls_resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunResumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunControlResult"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Resume conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    nudge_agent_run_api_runs__run_id__controls_nudge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunNudgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunNudgeResult"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Nudge conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fork_agent_run_api_runs__run_id__forks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointRestored"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Fork conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_run_branch_api_runs__run_id__branch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunBranchView"];
+                };
+            };
+            /** @description AgentRun not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
             /** @description Validation Error */
