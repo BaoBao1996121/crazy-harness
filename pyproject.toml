@@ -37,7 +37,7 @@ browser = [
   "playwright>=1.50",
 ]
 mcp = [
-  "mcp>=1.27,<2",
+  "mcp>=1.27,<3",
 ]
 
 [project.urls]
