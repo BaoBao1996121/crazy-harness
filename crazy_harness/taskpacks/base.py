@@ -23,7 +23,11 @@ class TaskPack(Protocol):
 
     def assignment_contract(self) -> AssignmentContract: ...
 
-    def scripted_responses(self) -> list[str]: ...
+    def scripted_responses(
+        self,
+        *,
+        run_metadata: dict[str, object] | None = None,
+    ) -> list[str]: ...
 
     def build_loop(
         self,

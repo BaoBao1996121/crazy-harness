@@ -17,6 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
   offline: "离线 / Offline",
   manual: "手动模式 / Manual",
   accepting: "接收中 / Accepting",
+  pausing: "等待安全边界 / Pausing",
   paused: "已暂停 / Paused",
   queued: "已排队 / Queued",
   running: "运行中 / Running",

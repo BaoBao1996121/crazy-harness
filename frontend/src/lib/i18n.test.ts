@@ -23,6 +23,7 @@ describe("Chinese-first control-room labels", () => {
 
   it("labels scheduler and cancellation states in both languages", () => {
     expect(statusLabel("accepting")).toBe("接收中 / Accepting");
+    expect(statusLabel("pausing")).toBe("等待安全边界 / Pausing");
     expect(statusLabel("paused")).toBe("已暂停 / Paused");
     expect(statusLabel("cancelling")).toBe("取消中 / Cancelling");
     expect(statusLabel("cancelled")).toBe("已取消 / Cancelled");

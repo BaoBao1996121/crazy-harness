@@ -183,7 +183,7 @@ class SQLiteEventStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             run = self._load_projection(connection, "run", run_id)
-            if run is None or run.get("status") != "running":
+            if run is None or run.get("status") not in {"running", "pausing"}:
                 connection.rollback()
                 raise ModelCallRejected(
                     f"run does not permit a model call: {run_id}"
@@ -471,6 +471,9 @@ class SQLiteEventStore:
             connection.execute("BEGIN IMMEDIATE")
             if run_id is not None:
                 run = self._load_projection(connection, "run", run_id)
+                if run is not None and run.get("status") in {"pausing", "paused"}:
+                    connection.rollback()
+                    return None
                 barrier_deadline = (
                     datetime.fromisoformat(str(run["checkpoint_barrier_expires_at"]))
                     if run is not None and run.get("checkpoint_barrier_expires_at")
@@ -794,6 +797,7 @@ class SQLiteEventStore:
         after: int = 0,
         run_id: str | None = None,
         task_id: str | None = None,
+        event_type: str | None = None,
         limit: int | None = None,
     ) -> list[EventRecord]:
         clauses = ["seq > ?"]
@@ -804,6 +808,9 @@ class SQLiteEventStore:
         if task_id is not None:
             clauses.append("task_id = ?")
             values.append(task_id)
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            values.append(event_type)
         sql = f"SELECT seq, event_json FROM events WHERE {' AND '.join(clauses)} ORDER BY seq"
         if limit is not None:
             sql += " LIMIT ?"
@@ -823,9 +830,15 @@ class SQLiteEventStore:
         *,
         task_id: str | None = None,
         run_id: str | None = None,
+        event_type: str | None = None,
     ) -> list[Event]:
         return [
-            record.event for record in self.read_records(task_id=task_id, run_id=run_id)
+            record.event
+            for record in self.read_records(
+                task_id=task_id,
+                run_id=run_id,
+                event_type=event_type,
+            )
         ]
 
     def last(
@@ -1117,7 +1130,33 @@ class SQLiteEventStore:
                     completed_at=event.created_at.isoformat(),
                 )
             elif event.type == "run.paused" and not run_terminal and not run_cancelling:
-                run["status"] = "paused"
+                run.update(
+                    status="paused",
+                    pause_reason=event.payload.get("reason"),
+                    paused_at=event.created_at.isoformat(),
+                )
+            elif (
+                event.type == "run.pause.requested"
+                and not run_terminal
+                and not run_cancelling
+            ):
+                run.update(
+                    status="pausing",
+                    pause_request_id=event.payload.get("request_id"),
+                    pause_reason=event.payload.get("reason"),
+                )
+            elif (
+                event.type == "run.resumed"
+                and not run_terminal
+                and not run_cancelling
+            ):
+                run.update(
+                    status="running",
+                    pause_request_id=None,
+                    pause_reason=None,
+                    paused_at=None,
+                    resumed_at=event.created_at.isoformat(),
+                )
             elif event.type == "checkpoint.barrier.acquired":
                 run["checkpoint_barrier_id"] = event.payload.get("barrier_id")
                 run["checkpoint_barrier_expires_at"] = event.payload.get("expires_at")

@@ -146,6 +146,7 @@ class LoopDecisionPolicy: ...
 ```text
 engineering.loop.requested
 engineering.loop.created
+engineering.loop_pack.authorized
 
 engineering.iteration.planned
 engineering.candidate.proposed
@@ -172,6 +173,8 @@ engineering.loop.cancelled
 8. 达到迭代、无进展、Token、费用或墙钟上限时 fail-closed。
 9. GET/Projection 只读取事实，不触发执行或评测。
 10. 所有父推进由 Claim + deterministic event id 保证并发重放收敛。
+11. `succeeded` child 必须绑定可验证 Candidate Snapshot；`failed/cancelled` 不得伪造成成功快照，直接进入失败收口。
+12. LoopPack 的身份、实现版本/源码哈希、TaskPack 与权限集在创建时冻结，每次父推进重新核验，漂移时 fail-closed。
 
 ## 7. 恢复矩阵
 
@@ -181,7 +184,8 @@ engineering.loop.cancelled
 | `candidate.proposed` | Candidate 已生成但未校验 | 复用原 Candidate，禁止再次调用模型 |
 | `candidate.validated` | 尚未创建或启动子 Run | 用确定性 child identity 幂等 Prepare/Release |
 | `iteration.started`，子 Run 非终态 | Worker 仍在运行或进程崩溃 | 查询子 Run；未终态则由既有 Scheduler 恢复，不新建第二个 Run |
-| 子 Run 终态，缺 `iteration.completed` | 子 Run 已结束但父级漏记 | 对账 child terminal event 与产物 Hash，补父事实 |
+| 子 Run `succeeded`，缺 `iteration.completed` | 子 Run 已结束但父级漏记 | 验证 Candidate Snapshot 与 terminal event，补父完成事实 |
+| 子 Run `failed/cancelled` | 没有可晋升候选，且通常没有 Candidate Snapshot | 保存终态 ID 与失败原因，写 `iteration.failed`，父 Loop 收口为 `blocked` |
 | `iteration.completed`，缺 Evaluation | 候选效果已产生 | 使用冻结 Evaluator 重跑只读评测 |
 | `evaluation.completed`，缺 Decision | 评测已完成 | 复用原 Evaluation，机械重算 Policy |
 | `decision.recorded`，非终态 | Active 已更新 | 规划下一确定性 iteration |
@@ -253,6 +257,18 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 | EL3 | HTTP/SSE + 中英双语 Control Room + 桌面/移动截图 | Core + Frontend |
 | EL4 | Kill-Restart Demo、文档、公开 PR | Release + GitHub CI |
 
+### 10.1 当前实现状态（2026-07-31）
+
+| 阶段 | 状态 | 可执行证据 |
+|---|---|---|
+| EL0 | 完成 | Domain Schema、Projection 与 Promotion Policy 单测 |
+| EL1 | 完成 | SQLite 父状态机、Work Claim、恢复与两轮纯 Port 谱系 |
+| EL2 | 完成 | `repo-quality` 连续运行两个 canonical child AgentRun；真实 Tool/Gate、Snapshot、独立 Evaluator 与 `0.5 -> 1.0` 晋升 |
+| EL3 | 进行中 | single-Agent 的持久控制 HTTP/UI 已完成；父级 Engineering Loop API/SSE/UI 尚未接入 |
+| EL4 | 部分完成 | single-Agent Pause/Fork 已通过 PID `32120 -> 34028` Kill-Restart；父级 Loop Golden、完整 Release 与 GitHub CI 尚待执行 |
+
+这里有一个必须分清的边界：**AgentRun Control Room 控制的是某一个 child Run；Engineering Loop Control Room 观察和控制的是多个 Candidate Iteration 组成的父循环。** 前者已经可操作，不能据此宣称后者页面已经完成。
+
 ## 11. 成本与诚实边界
 
 - Scripted Quickstart 不证明真实模型质量，只证明控制协议、真实工具、评测和恢复可以运行。
@@ -260,6 +276,7 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 - 第一版只支持串行 iteration。候选并行搜索属于后续 Population/Pareto 扩展，不在 v0.10 偷加。
 - 第一版自动晋升只发生在 disposable Workspace；PR 合并、部署和外部写入默认需要人工门。
 - `repo-quality` 是第一个业务落点，不进入 Core；CI/CD 与 AI 管线通过新增 LoopPack 扩展。
+- single-Agent Pause/Resume/Nudge/Fork 已经是持久能力，但父 Engineering Loop 的暂停、人工晋升、取消和并行候选尚未设计为正式控制协议。
 
 ## 12. 设计审查
 
@@ -267,13 +284,12 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 
 1. 外部依赖：复用现有 SQLite、Scheduler、AgentLoop、WorkspaceSnapshotStore 和 Python unittest；无新增运行时依赖。
 2. 性能数字：未承诺吞吐或延迟；两轮调用成本标记待 DeepSeek 实测。
-3. 异常路径：覆盖 Candidate、child Run、Evaluation、Decision 四个崩溃窗口，以及取消、预算和外部副作用边界。
+3. 异常路径：覆盖 Candidate、child Run、Evaluation、Decision 四个崩溃窗口，以及失败/取消 child、LoopPack 授权漂移、取消、预算和外部副作用边界。
 4. 阈值依据：最大 iteration、无进展次数与 Claim TTL 都作为初始可配置值，等待 Golden/Live 数据调优。
 5. 需求边界：v0.10 只做串行 disposable Repo Golden Loop，不宣称已经完成并行搜索、火山云部署或自动生产晋升。
 
 ## 13. 依据
 
-- 当前代码事实：`crazy_harness/core/agents/loop.py`、`crazy_harness/control_plane/eval_campaigns.py`、`crazy_harness/core/checkpoints/`。
-- 本地研究：`C:\Users\lvming.lin\Documents\Obsidian Vault\reports\04-工程实践\R142_LoopEngineering循环工程调研.md`。
+- 当前代码事实：`crazy_harness/core/agents/loop.py`、`crazy_harness/core/agents/session.py`、`crazy_harness/control_plane/engineering_loops.py`、`crazy_harness/control_plane/run_controls.py`、`crazy_harness/loop_packs/`、`crazy_harness/core/checkpoints/`。
+- 本地研究：Obsidian 报告 `R142_LoopEngineering循环工程调研.md`（研究源不进入公开仓库）。
 - 既有架构决策：`docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md`、`docs/COMPOSITE_CHECKPOINT_DESIGN.md`。
-

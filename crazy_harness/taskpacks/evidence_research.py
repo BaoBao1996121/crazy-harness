@@ -494,7 +494,11 @@ class EvidenceResearchTaskPack:
         )
 
     @staticmethod
-    def scripted_responses() -> list[str]:
+    def scripted_responses(
+        *,
+        run_metadata: dict[str, object] | None = None,
+    ) -> list[str]:
+        del run_metadata
         actions = [
             {
                 "type": "call_tool",

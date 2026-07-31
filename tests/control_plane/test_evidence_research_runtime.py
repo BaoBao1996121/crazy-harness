@@ -71,7 +71,8 @@ def test_research_loop_is_recovered_from_persisted_pack_id_and_brief(tmp_path):
     )
 
     reopened = ResidentRuntime(tmp_path)
-    loop = reopened._single_loop_for(assignment)
+    session = reopened._single_session_for(assignment)
+    loop = session.loop
 
     assert loop.prompt_pack.prompt_version == "evidence-research-v1"
     assert loop.prompt_pack.task_brief_section == brief

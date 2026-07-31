@@ -3,11 +3,23 @@ from crazy_harness.core.agents.completion import CompletionGate, NudgeBudget, Pr
 from crazy_harness.core.agents.contracts import AssignmentBudget, AssignmentContract
 from crazy_harness.core.agents.loop import AgentLoop, InjectedCrash
 from crazy_harness.core.agents.planning import LocalPlan, PlanEvent, PlanStep, reduce_plan
+from crazy_harness.core.agents.session import (
+    AgentRunKind,
+    AgentRunSession,
+    AgentRunSessionIdentity,
+    AgentRunSessionView,
+    AgentRunStatus,
+)
 from crazy_harness.core.agents.state import LoopPhase
 
 __all__ = [
     "AgentAction",
     "AgentLoop",
+    "AgentRunKind",
+    "AgentRunSession",
+    "AgentRunSessionIdentity",
+    "AgentRunSessionView",
+    "AgentRunStatus",
     "AssignmentBudget",
     "AssignmentContract",
     "CompletionGate",

@@ -15,6 +15,7 @@ from crazy_harness.core.checkpoints import (
 def _write_workspace(root: Path) -> None:
     (root / "nested").mkdir(parents=True)
     (root / "README.md").write_bytes(b"line one\r\nline two\n")
+    (root / "module.py").write_bytes(b"VALUE = 1\n")
     (root / "nested" / "payload.bin").write_bytes(bytes(range(64)))
 
 
@@ -38,7 +39,7 @@ def test_snapshot_is_content_addressed_and_restores_exact_bytes(tmp_path: Path):
     store.restore(first, restored)
 
     assert first == second
-    assert first.file_count == 2
+    assert first.file_count == 3
     assert first.total_bytes == sum(len(value) for value in _tree(workspace).values())
     assert len(first.object_id) == 64
     assert _tree(restored) == _tree(workspace)

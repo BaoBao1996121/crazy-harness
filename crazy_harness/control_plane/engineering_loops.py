@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from crazy_harness.control_plane.store import SQLiteEventStore
 from crazy_harness.core.engineering_loops import (
@@ -67,9 +67,15 @@ class ChildRunOutcome(BaseModel):
     task_id: str = Field(min_length=1)
     status: Literal["succeeded", "failed", "cancelled"]
     terminal_event_id: str = Field(min_length=1)
-    candidate_state_ref: str = Field(min_length=1)
+    candidate_state_ref: str | None = Field(default=None, min_length=1)
     artifact_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_candidate_snapshot_for_success(self) -> ChildRunOutcome:
+        if self.status == "succeeded" and self.candidate_state_ref is None:
+            raise ValueError("succeeded child outcome requires candidate_state_ref")
+        return self
 
 
 class EngineeringIterationReport(BaseModel):
@@ -279,6 +285,14 @@ class EngineeringLoopService:
             )
             status = self._iteration_status(phases)
             failure = phases.get("engineering.iteration.failed")
+            failure_reason = str(failure.payload["reason"]) if failure else None
+            if outcome_event is not None and outcome is not None:
+                legacy_mismatch = self._child_outcome_mismatch(identity, outcome)
+                if legacy_mismatch is not None:
+                    status = "failed"
+                    failure_reason = f"legacy completion rejected: {legacy_mismatch}"
+                    evaluation = None
+                    decision = None
             report = EngineeringIterationReport(
                 identity=identity,
                 status=status,
@@ -287,7 +301,7 @@ class EngineeringLoopService:
                 outcome=outcome,
                 evaluation=evaluation,
                 decision=decision,
-                failure_reason=(str(failure.payload["reason"]) if failure else None),
+                failure_reason=failure_reason,
             )
             iterations.append(report)
             if decision is not None:
@@ -349,8 +363,7 @@ class EngineeringLoopService:
     def list_reports(self) -> list[EngineeringLoopReport]:
         loop_ids = {
             event.run_id
-            for event in self.store.read_all()
-            if event.type == "engineering.loop.created"
+            for event in self.store.read_all(event_type="engineering.loop.created")
         }
         return [self.report(loop_id) for loop_id in sorted(loop_ids)]
 
@@ -504,7 +517,6 @@ class EngineeringLoopService:
             )
         if current.status == "candidate_validated":
             assert current.candidate is not None
-            launch_child(contract, identity, current.candidate)
             return (
                 self._iteration_event(
                     report.loop_id,
@@ -520,6 +532,9 @@ class EngineeringLoopService:
                 "after_child_linked",
             )
         if current.status == "running":
+            assert current.candidate is not None
+            # 父关联已经持久化；子 Prepare/Release 因而可以安全重放。
+            launch_child(contract, identity, current.candidate)
             outcome = child_outcome(identity)
             if outcome is None:
                 return None, None
@@ -560,6 +575,7 @@ class EngineeringLoopService:
             )
         if current.status == "completed":
             assert current.candidate is not None and current.outcome is not None
+            assert current.outcome.candidate_state_ref is not None
             evaluation = evaluate(contract, current.candidate, current.outcome)
             evaluation = self._normalize_evaluation(current, evaluation)
             return (
@@ -646,6 +662,17 @@ class EngineeringLoopService:
             return "child outcome run identity mismatch"
         if outcome.task_id != identity.child_task_id:
             return "child outcome task identity mismatch"
+        if outcome.status != "succeeded":
+            snapshot_state = (
+                "candidate snapshot absent"
+                if outcome.candidate_state_ref is None
+                else "candidate snapshot present but ineligible"
+            )
+            return (
+                f"child run {outcome.status}; "
+                f"terminal_event_id={outcome.terminal_event_id}; "
+                f"{snapshot_state}; evaluation skipped"
+            )
         return None
 
     @staticmethod

@@ -172,6 +172,41 @@ def test_two_iterations_form_a_persisted_active_state_lineage(tmp_path) -> None:
     assert event_types[-1] == "engineering.loop.completed"
 
 
+def test_parent_iteration_link_is_persisted_before_child_launch(tmp_path) -> None:
+    store = SQLiteEventStore(tmp_path / "events.db")
+    service = EngineeringLoopService(store)
+    loop_id = service.create(request()).loop_id
+    ports = DeterministicPorts()
+
+    for _ in range(4):
+        assert service.advance_one(
+            loop_id,
+            propose=ports.propose,
+            launch_child=ports.launch,
+            child_outcome=ports.observe,
+            evaluate=ports.evaluate,
+        ) is True
+
+    report = service.report(loop_id)
+    assert report.iterations[0].status == "running"
+    assert ports.launches == []
+
+    def launch_after_parent_fact(contract, identity, candidate) -> None:
+        assert service.report(loop_id).iterations[0].status == "running"
+        ports.launch(contract, identity, candidate)
+
+    assert service.advance_one(
+        loop_id,
+        propose=ports.propose,
+        launch_child=launch_after_parent_fact,
+        child_outcome=ports.observe,
+        evaluate=ports.evaluate,
+    ) is True
+    assert [item.child_run_id for item in ports.launches] == [
+        report.iterations[0].identity.child_run_id
+    ]
+
+
 def test_persisted_candidate_is_reused_after_process_crash(tmp_path) -> None:
     store = SQLiteEventStore(tmp_path / "events.db")
     service = EngineeringLoopService(store)
@@ -221,7 +256,9 @@ def test_child_prepare_retry_reuses_the_same_identity(tmp_path) -> None:
     service = EngineeringLoopService(SQLiteEventStore(tmp_path / "events.db"))
     loop_id = service.create(request()).loop_id
     ports = DeterministicPorts()
-    for _ in range(3):
+    # The fourth durable phase commits engineering.iteration.started before
+    # child preparation is allowed to create any separately scheduled work.
+    for _ in range(4):
         assert service.advance_one(
             loop_id,
             propose=ports.propose,
@@ -253,7 +290,7 @@ def test_child_prepare_retry_reuses_the_same_identity(tmp_path) -> None:
         evaluate=ports.evaluate,
     ) is True
     assert calls[0] == calls[1]
-    assert service.report(loop_id).iterations[0].status == "running"
+    assert service.report(loop_id).iterations[0].status == "completed"
 
 
 def test_nonterminal_child_does_not_create_fake_progress(tmp_path) -> None:

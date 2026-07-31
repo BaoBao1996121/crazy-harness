@@ -29,6 +29,8 @@ class ContextBuilder:
         "model.requested",
         "model.response.reused",
         "agent.command.reused",
+        "agent.nudged",
+        "agent.nudge.set",
     }
 
     def __init__(self, *, artifact_store, offload_chars: int = 8000, recent_event_limit: int = 20) -> None:

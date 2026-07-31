@@ -28,6 +28,15 @@ from crazy_harness.control_plane.checkpoints import (
     UnsafeCheckpointBoundary,
 )
 from crazy_harness.control_plane.model_governance import ModelBudgetConfig
+from crazy_harness.control_plane.run_controls import (
+    AgentRunBranchView,
+    RunControlResult,
+    RunForkRequest,
+    RunNudgeRequest,
+    RunNudgeResult,
+    RunPauseRequest,
+    RunResumeRequest,
+)
 
 from crazy_harness.control_plane.paired_evals import (
     PairedEvalCreationRejected,
@@ -37,6 +46,7 @@ from crazy_harness.control_plane.paired_evals import (
 )
 from crazy_harness.control_plane.runtime import ResidentRuntime, RunCreated, TaskRequest
 from crazy_harness.control_plane.kernel import KernelDecision
+from crazy_harness.core.agents import AgentRunSessionView
 from crazy_harness.core.checkpoints import CheckpointContract, CheckpointIntegrityError
 from crazy_harness.control_plane.views import (
     CancelResult,
@@ -48,7 +58,7 @@ from crazy_harness.control_plane.views import (
     SnapshotView,
 )
 
-CONTROL_PLANE_VERSION = "0.9.0-dev"
+CONTROL_PLANE_VERSION = "0.10.0-dev"
 
 
 class FaultRequest(BaseModel):
@@ -98,6 +108,19 @@ class ApiErrorResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     detail: ApiErrorDetail
+
+
+def _error_detail(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+) -> dict[str, str | bool]:
+    return ApiErrorDetail(
+        code=code,
+        message=message,
+        retryable=retryable,
+    ).model_dump(mode="json")
 
 
 def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
@@ -307,6 +330,150 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
             return CancelResult.model_validate(runtime.cancel_run(run_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get(
+        "/api/runs/{run_id}/agent-run",
+        response_model=AgentRunSessionView,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+            409: {"model": ApiErrorResponse, "description": "AgentRun unavailable"},
+        },
+    )
+    def get_agent_run(run_id: str) -> AgentRunSessionView:
+        try:
+            return runtime.agent_run_view(run_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail("agent_run_unavailable", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/runs/{run_id}/controls/pause",
+        response_model=RunControlResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+            409: {"model": ApiErrorResponse, "description": "Pause conflict"},
+        },
+    )
+    def pause_agent_run(
+        run_id: str,
+        request: RunPauseRequest,
+    ) -> RunControlResult:
+        try:
+            return runtime.pause_agent_run(run_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail("pause_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/runs/{run_id}/controls/resume",
+        response_model=RunControlResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+            409: {"model": ApiErrorResponse, "description": "Resume conflict"},
+        },
+    )
+    def resume_agent_run(
+        run_id: str,
+        request: RunResumeRequest,
+    ) -> RunControlResult:
+        try:
+            return runtime.resume_agent_run(run_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail("resume_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/runs/{run_id}/controls/nudge",
+        response_model=RunNudgeResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+            409: {"model": ApiErrorResponse, "description": "Nudge conflict"},
+        },
+    )
+    def nudge_agent_run(
+        run_id: str,
+        request: RunNudgeRequest,
+    ) -> RunNudgeResult:
+        try:
+            return runtime.nudge_agent_run(run_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail("nudge_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/runs/{run_id}/forks",
+        response_model=CheckpointRestored,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+            409: {"model": ApiErrorResponse, "description": "Fork conflict"},
+        },
+    )
+    def fork_agent_run(
+        run_id: str,
+        request: RunForkRequest,
+    ) -> CheckpointRestored:
+        try:
+            return runtime.fork_agent_run(run_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
+        except (
+            CheckpointRestoreBlocked,
+            CheckpointIntegrityError,
+            CheckpointIdempotencyConflict,
+            UnsafeCheckpointBoundary,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail("fork_conflict", str(exc)),
+            ) from exc
+
+    @app.get(
+        "/api/runs/{run_id}/branch",
+        response_model=AgentRunBranchView,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "AgentRun not found"},
+        },
+    )
+    def get_agent_run_branch(run_id: str) -> AgentRunBranchView:
+        try:
+            return runtime.agent_run_branch(run_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail("agent_run_not_found", "run not found"),
+            ) from exc
 
     @app.post(
         "/api/runs/{run_id}/checkpoints",

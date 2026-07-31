@@ -21,6 +21,14 @@ export type Checkpoint = components["schemas"]["CheckpointContract"];
 export type CheckpointCreateRequest = components["schemas"]["CheckpointCreateRequest"];
 export type CheckpointRestoreRequest = components["schemas"]["CheckpointRestoreRequest"];
 export type CheckpointRestored = components["schemas"]["CheckpointRestored"];
+export type AgentRunSession = components["schemas"]["AgentRunSessionView"];
+export type AgentRunBranch = components["schemas"]["AgentRunBranchView"];
+export type RunPauseRequest = components["schemas"]["RunPauseRequest"];
+export type RunResumeRequest = components["schemas"]["RunResumeRequest"];
+export type RunNudgeRequest = components["schemas"]["RunNudgeRequest"];
+export type RunNudgeResult = components["schemas"]["RunNudgeResult"];
+export type RunForkRequest = components["schemas"]["RunForkRequest"];
+export type RunControlResult = components["schemas"]["RunControlResult"];
 export type FaultPoint =
   | "after_candidate_persisted"
   | "after_model_persisted"
@@ -120,6 +128,30 @@ export const api = {
       `/api/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  agentRunSession: (runId: string) =>
+    request<AgentRunSession>(`/api/runs/${encodeURIComponent(runId)}/agent-run`),
+  pauseAgentRun: (runId: string, body: RunPauseRequest) =>
+    request<RunControlResult>(`/api/runs/${encodeURIComponent(runId)}/controls/pause`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  resumeAgentRun: (runId: string, body: RunResumeRequest) =>
+    request<RunControlResult>(`/api/runs/${encodeURIComponent(runId)}/controls/resume`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  nudgeAgentRun: (runId: string, body: RunNudgeRequest) =>
+    request<RunNudgeResult>(`/api/runs/${encodeURIComponent(runId)}/controls/nudge`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  forkAgentRun: (runId: string, body: RunForkRequest) =>
+    request<CheckpointRestored>(`/api/runs/${encodeURIComponent(runId)}/forks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  agentRunBranch: (runId: string) =>
+    request<AgentRunBranch>(`/api/runs/${encodeURIComponent(runId)}/branch`),
   snapshot: (runId?: string) =>
     request<Snapshot>(`/api/snapshot${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
   events: (runId: string, after = 0) =>

@@ -87,6 +87,21 @@ class CheckpointService:
         self.snapshots = snapshots
         self.artifact_root = artifact_root.resolve()
 
+    def fork_blocker(self, run_id: str) -> str | None:
+        """Return why the current durable boundary cannot be safely restored."""
+
+        records = self.store.read_records(run_id=run_id)
+        try:
+            self._assert_safe(records)
+        except UnsafeCheckpointBoundary as exc:
+            return str(exc)
+        effects = self._effect_boundary([record.event for record in records])
+        if effects.restore_blockers:
+            return "checkpoint restore is blocked: " + ", ".join(
+                effects.restore_blockers
+            )
+        return None
+
     def create(
         self,
         run_id: str,

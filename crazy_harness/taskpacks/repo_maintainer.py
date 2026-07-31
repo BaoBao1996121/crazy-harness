@@ -364,7 +364,11 @@ class RepoMaintainerTaskPack:
         )
 
     @staticmethod
-    def scripted_responses() -> list[str]:
+    def scripted_responses(
+        *,
+        run_metadata: dict[str, object] | None = None,
+    ) -> list[str]:
+        del run_metadata
         actions = [
             {"type": "call_tool", "reason": "load the maintenance method", "tool_name": "skill.activate", "tool_args": {"name": "repo-maintainer"}},
             {"type": "call_tool", "reason": "inspect implementation", "tool_name": "repo.read", "tool_args": {"path": "calculator.py"}},

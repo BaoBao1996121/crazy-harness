@@ -9,11 +9,11 @@ with TemporaryDirectory() as raw:
         id="iteration-demo-child-linked",
         run_id="loop-demo",
         task_id="loop-demo",
-        type="engineering.iteration.child.linked",
+        type="engineering.iteration.started",
         source="spike",
         payload={"iteration": 1, "child_run_id": "run-demo"},
     )
     store.append(event)
     store.append(event)
     assert [item.id for item in store.read_all(run_id="loop-demo")] == [event.id]
-    print("PASS: deterministic parent-child event replay commits once")
+    print("PASS: persisted parent iteration identity replays exactly once before launch")

@@ -85,4 +85,33 @@ describe("paired eval API", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
   });
+
+  it("uses the durable AgentRun control and branch routes", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.agentRunSession("run/one");
+    await api.pauseAgentRun("run/one", { request_id: "pause-1", reason: "human review" });
+    await api.resumeAgentRun("run/one", { request_id: "resume-1", reason: "review complete" });
+    await api.nudgeAgentRun("run/one", { request_id: "nudge-1", message: "verify tests" });
+    await api.forkAgentRun("run/one", { request_id: "fork-1", label: "alternative" });
+    await api.agentRunBranch("run/one");
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/runs/run%2Fone/agent-run",
+      "/api/runs/run%2Fone/controls/pause",
+      "/api/runs/run%2Fone/controls/resume",
+      "/api/runs/run%2Fone/controls/nudge",
+      "/api/runs/run%2Fone/forks",
+      "/api/runs/run%2Fone/branch",
+    ]);
+    for (const index of [1, 2, 3, 4]) {
+      expect(fetchMock.mock.calls[index][1]).toMatchObject({ method: "POST" });
+    }
+  });
 });
