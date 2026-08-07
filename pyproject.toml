@@ -30,7 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-  "ruff==0.15.22",
+  "ruff==0.16.1",
 ]
 examples = []
 browser = [
