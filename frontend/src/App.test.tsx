@@ -54,6 +54,26 @@ vi.mock("./hooks/useEvalCampaign", () => ({
   }),
 }));
 
+vi.mock("./hooks/useEngineeringLoop", () => ({
+  useEngineeringLoop: () => ({
+    loopId: undefined,
+    report: null,
+    runtime: null,
+    streamState: "offline",
+    busy: false,
+    loading: false,
+    notice: null,
+    setNotice: vi.fn(),
+    createLoop: vi.fn(),
+    clearLoop: vi.fn(),
+    advance: vi.fn(),
+    drain: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    cancel: vi.fn(),
+  }),
+}));
+
 vi.mock("./hooks/useCheckpoints", () => ({
   useCheckpoints: () => ({
     checkpoints: [],

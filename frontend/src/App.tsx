@@ -6,9 +6,11 @@ import { AgentRunControlBand } from "./components/AgentRunControlBand";
 import { CampaignBand } from "./components/CampaignBand";
 import { CheckpointBand } from "./components/CheckpointBand";
 import { CreateCampaignDialog } from "./components/CreateCampaignDialog";
+import { CreateEngineeringLoopDialog } from "./components/CreateEngineeringLoopDialog";
 import { CreateEvalDialog } from "./components/CreateEvalDialog";
 import { CreateRunDialog } from "./components/CreateRunDialog";
 import { EvalComparisonBand } from "./components/EvalComparisonBand";
+import { EngineeringLoopBand } from "./components/EngineeringLoopBand";
 import { InspectorPanel, type InspectorTab } from "./components/InspectorPanel";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
@@ -16,6 +18,7 @@ import { useControlPlane } from "./hooks/useControlPlane";
 import { useAgentRunControls } from "./hooks/useAgentRunControls";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useEvalCampaign } from "./hooks/useEvalCampaign";
+import { useEngineeringLoop } from "./hooks/useEngineeringLoop";
 import { usePairedEval } from "./hooks/usePairedEval";
 
 export default function App() {
@@ -25,6 +28,7 @@ export default function App() {
     onSelectRun: control.selectRun,
   });
   const campaign = useEvalCampaign();
+  const engineering = useEngineeringLoop();
   const [checkpointOpen, setCheckpointOpen] = useState(false);
   const [agentControlOpen, setAgentControlOpen] = useState(false);
   const executionMode = control.events.find(
@@ -46,6 +50,7 @@ export default function App() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [evalDialogOpen, setEvalDialogOpen] = useState(false);
   const [campaignDialogOpen, setCampaignDialogOpen] = useState(false);
+  const [engineeringDialogOpen, setEngineeringDialogOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("event");
 
   const openChaos = () => {
@@ -54,16 +59,18 @@ export default function App() {
   };
 
   return (
-    <div className={`control-room ${pairedEval.evalId || campaign.campaignId ? "has-eval" : ""} ${(checkpointOpen || (agentControlOpen && isSingleAgentRun)) && control.runId ? "has-checkpoint" : ""}`}>
+    <div className={`control-room ${pairedEval.evalId || campaign.campaignId || engineering.loopId ? "has-eval" : ""} ${(checkpointOpen || (agentControlOpen && isSingleAgentRun)) && control.runId ? "has-checkpoint" : ""}`}>
       <TopBar
         snapshot={control.snapshot}
-        streamState={control.streamState}
+        runtime={engineering.loopId ? engineering.runtime : null}
+        streamState={engineering.loopId ? engineering.streamState : control.streamState}
         eventCount={control.events.length}
-        busy={control.busy || pairedEval.busy || campaign.busy || checkpoints.busy || agentControls.busy}
+        busy={control.busy || pairedEval.busy || campaign.busy || engineering.busy || checkpoints.busy || agentControls.busy}
         agentControlAvailable={isSingleAgentRun}
         onNewRun={() => setDialogOpen(true)}
         onNewEval={() => setEvalDialogOpen(true)}
         onNewCampaign={() => setCampaignDialogOpen(true)}
+        onNewEngineeringLoop={() => setEngineeringDialogOpen(true)}
         onCheckpoints={() => {
           setAgentControlOpen(false);
           setCheckpointOpen(true);
@@ -75,8 +82,23 @@ export default function App() {
         onCancel={() => void control.cancelRun()}
         onChaos={openChaos}
       />
-      {(campaign.campaignId || pairedEval.evalId) && (
+      {(engineering.loopId || campaign.campaignId || pairedEval.evalId) && (
         <div className="eval-stack">
+          {engineering.loopId && (
+            <EngineeringLoopBand
+              loopId={engineering.loopId}
+              report={engineering.report}
+              loading={engineering.loading}
+              busy={engineering.busy}
+              onAdvance={() => void engineering.advance()}
+              onDrain={() => void engineering.drain()}
+              onPause={() => void engineering.pause()}
+              onResume={() => void engineering.resume()}
+              onCancel={() => void engineering.cancel()}
+              onSelectRun={control.selectRun}
+              onClose={() => engineering.clearLoop()}
+            />
+          )}
           {campaign.campaignId && (
             <CampaignBand
               campaignId={campaign.campaignId}
@@ -170,6 +192,7 @@ export default function App() {
           const created = await control.createRun(request);
           pairedEval.clearEval();
           campaign.clearCampaign();
+          engineering.clearLoop();
           return created;
         }}
       />
@@ -180,7 +203,10 @@ export default function App() {
         onClose={() => setEvalDialogOpen(false)}
         onSubmit={async (request) => {
           const created = await pairedEval.createEval(request);
-          if (created) campaign.clearCampaign();
+          if (created) {
+            campaign.clearCampaign();
+            engineering.clearLoop();
+          }
           return created;
         }}
       />
@@ -191,18 +217,36 @@ export default function App() {
         onClose={() => setCampaignDialogOpen(false)}
         onSubmit={async (request) => {
           const created = await campaign.createCampaign(request);
-          if (created) pairedEval.clearEval();
+          if (created) {
+            pairedEval.clearEval();
+            engineering.clearLoop();
+          }
           return created;
         }}
       />
-      {(agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice) && (
+      <CreateEngineeringLoopDialog
+        open={engineeringDialogOpen}
+        busy={engineering.busy}
+        deepseekConfigured={control.snapshot?.runtime.deepseek_configured ?? false}
+        onClose={() => setEngineeringDialogOpen(false)}
+        onSubmit={async (request) => {
+          const created = await engineering.createLoop(request);
+          if (created) {
+            pairedEval.clearEval();
+            campaign.clearCampaign();
+          }
+          return created;
+        }}
+      />
+      {(engineering.notice || agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice) && (
         <div className="notice" role="status">
-          <span>{agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice}</span>
+          <span>{engineering.notice || agentControls.notice || checkpoints.notice || campaign.notice || pairedEval.notice || control.notice}</span>
           <button
             className="icon-only"
             onClick={() => {
               campaign.setNotice(null);
               pairedEval.setNotice(null);
+              engineering.setNotice(null);
               agentControls.setNotice(null);
               checkpoints.setNotice(null);
               control.setNotice(null);

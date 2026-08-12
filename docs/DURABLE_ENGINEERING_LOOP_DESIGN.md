@@ -147,6 +147,11 @@ class LoopDecisionPolicy: ...
 engineering.loop.requested
 engineering.loop.created
 engineering.loop_pack.authorized
+engineering.loop.pause.requested
+engineering.loop.paused
+engineering.loop.resume.requested
+engineering.loop.resumed
+engineering.loop.cancellation.requested
 
 engineering.iteration.planned
 engineering.candidate.proposed
@@ -234,7 +239,10 @@ engineering.loop.cancelled
 POST /api/engineering-loops
 GET  /api/engineering-loops
 GET  /api/engineering-loops/{loop_id}
+POST /api/engineering-loops/{loop_id}/advance
 POST /api/engineering-loops/{loop_id}/drain
+POST /api/engineering-loops/{loop_id}/pause
+POST /api/engineering-loops/{loop_id}/resume
 POST /api/engineering-loops/{loop_id}/cancel
 ```
 
@@ -247,6 +255,14 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 
 每个 Iteration 可下钻查看：Candidate Diff、子 Run Timeline、工具证据、Evaluator 版本、指标变化、预算消耗、快照谱系和恢复事件。
 
+父级控制语义：
+
+1. `advance` 只提交一个新的父级事实边界；`drain` 只调度指定 Loop 及其 canonical child，不推进其他 Loop。
+2. Pause/Resume 先写持久请求，再与父推进共用 Claim 形成提交屏障；请求与应用之间崩溃时，常驻 Runtime 会从 Event 重放并补齐终态。
+3. Pause 阻止新的父 phase 和新的 child release，但不会撤销已经释放的 child；后者可以完成收尾，UI 必须明确显示这个边界。
+4. `GET` 与按 `loop_id` 过滤的 SSE 只读事实，不触发推进、评测或投递。
+5. Public Create DTO 不接受 Worker、Metric、Permission 或 Initial State；这些带权字段由受信 Runtime 根据 `LoopPack` 编译。
+
 ## 10. 分阶段交付
 
 | Checkpoint | 内容 | 回归 Stage |
@@ -257,17 +273,17 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 | EL3 | HTTP/SSE + 中英双语 Control Room + 桌面/移动截图 | Core + Frontend |
 | EL4 | Kill-Restart Demo、文档、公开 PR | Release + GitHub CI |
 
-### 10.1 当前实现状态（2026-07-31）
+### 10.1 当前实现状态（2026-08-12）
 
 | 阶段 | 状态 | 可执行证据 |
 |---|---|---|
 | EL0 | 完成 | Domain Schema、Projection 与 Promotion Policy 单测 |
 | EL1 | 完成 | SQLite 父状态机、Work Claim、恢复与两轮纯 Port 谱系 |
 | EL2 | 完成 | `repo-quality` 连续运行两个 canonical child AgentRun；真实 Tool/Gate、Snapshot、独立 Evaluator 与 `0.5 -> 1.0` 晋升 |
-| EL3 | 进行中 | single-Agent 的持久控制 HTTP/UI 已完成；父级 Engineering Loop API/SSE/UI 尚未接入 |
-| EL4 | 部分完成 | single-Agent Pause/Fork 已通过 PID `32120 -> 34028` Kill-Restart；父级 Loop Golden、完整 Release 与 GitHub CI 尚待执行 |
+| EL3 | 完成 | 父级 Create/List/Get/Advance/Scoped Drain/Pause/Resume/Cancel API、只读 SSE、中英双语 Control Room、child Run 下钻和桌面/移动验收均已完成 |
+| EL4 | 进行中 | Scripted Golden Loop 两轮达到 `0.5 -> 1.0`；父循环在 Kill-Restart 后保持 Paused；公开 PR 与 GitHub CI 尚待执行 |
 
-这里有一个必须分清的边界：**AgentRun Control Room 控制的是某一个 child Run；Engineering Loop Control Room 观察和控制的是多个 Candidate Iteration 组成的父循环。** 前者已经可操作，不能据此宣称后者页面已经完成。
+这里有一个必须分清的边界：**AgentRun Control Room 控制的是某一个 child Run；Engineering Loop Control Room 观察和控制的是多个 Candidate Iteration 组成的父循环。** 点击父循环中的 child Run 会保留 `loop_id`，同时选择 canonical `run_id`，因此父级故事与子级完整轨迹可以并排核对。
 
 ## 11. 成本与诚实边界
 
@@ -276,7 +292,16 @@ Control Room 不直接展示上百条底层事件，而是先给一条可读故�
 - 第一版只支持串行 iteration。候选并行搜索属于后续 Population/Pareto 扩展，不在 v0.10 偷加。
 - 第一版自动晋升只发生在 disposable Workspace；PR 合并、部署和外部写入默认需要人工门。
 - `repo-quality` 是第一个业务落点，不进入 Core；CI/CD 与 AI 管线通过新增 LoopPack 扩展。
-- single-Agent Pause/Resume/Nudge/Fork 已经是持久能力，但父 Engineering Loop 的暂停、人工晋升、取消和并行候选尚未设计为正式控制协议。
+- 父 Engineering Loop 的 Pause/Resume 已是持久控制协议；Cancel 在取得父推进 Claim 后幂等提交，但 Claim 忙时当前 API 仍要求调用方重试，尚未升级成“先持久取消意图、后台必达”的完整协议。
+- 人工晋升和并行候选尚未实现；v1 仍是串行、自动晋升仅限 disposable Workspace。
+
+## 11.1 EL3 实机证据（2026-08-12）
+
+- Golden Loop：`loop_d6639d6336c2`，两个 canonical child AgentRun，独立评分 `0.5 -> 1.0`，终态 `completed`。
+- Kill-Restart：`loop_b419b349354c` 在服务进程退出、同一 SQLite 重启后仍为 `paused`，没有产生 Iteration。
+- 子运行下钻：分享 URL 同时保留 `loop=loop_d6639d6336c2` 与 `run=run_83cdc4699b68`，下方读取 181 条 canonical child 事实。
+- 浏览器：1440x900 与 390x844 均无页面横向溢出，Console 0 warning / 0 error。
+- 截图：`docs/assets/engineering-loop-control-desktop.png`、`docs/assets/engineering-loop-paused-desktop.png`、`docs/assets/engineering-loop-control-mobile.png`、`docs/assets/engineering-loop-child-drilldown.png`。
 
 ## 12. 设计审查
 

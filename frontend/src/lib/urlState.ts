@@ -1,6 +1,6 @@
-export type IdentityParam = "campaign" | "eval" | "run" | "trial";
+export type IdentityParam = "campaign" | "eval" | "loop" | "run" | "trial";
 
-const IDENTITY_PARAMS: IdentityParam[] = ["campaign", "eval", "run", "trial"];
+const IDENTITY_PARAMS: IdentityParam[] = ["campaign", "eval", "loop", "run", "trial"];
 
 export function mergeSearchParam(
   search: string,

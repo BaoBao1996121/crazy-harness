@@ -32,9 +32,13 @@ from crazy_harness.control_plane.eval_campaigns import (
 )
 from crazy_harness.control_plane.engineering_loops import (
     ChildRunOutcome,
+    EngineeringLoopCancelRequest,
+    EngineeringLoopCreateRequest,
     EngineeringLoopCreated,
+    EngineeringLoopPauseRequest,
     EngineeringLoopReport,
     EngineeringLoopRequest,
+    EngineeringLoopResumeRequest,
     EngineeringLoopService,
 )
 from crazy_harness.control_plane.kernel import (
@@ -94,7 +98,12 @@ from crazy_harness.core.events import Event
 from crazy_harness.core.engineering_loops import (
     CandidateProposal,
     EngineeringIterationIdentity,
+    EngineeringLoopBudget,
     EngineeringLoopContract,
+    MetricContract,
+    MetricDirection,
+    PromotionMode,
+    WorkerProfile,
 )
 from crazy_harness.core.models import (
     DeepSeekOpenAIProvider,
@@ -1418,6 +1427,9 @@ class ResidentRuntime:
                 self._reconcile_resumes()
                 stage = "nudge_reconciliation"
                 self._reconcile_agent_nudges()
+                stage = "engineering_loop_control_reconciliation"
+                if self._reconcile_engineering_loop_controls():
+                    continue
                 stage = "eval_control"
                 if self._advance_eval_control():
                     continue
@@ -2210,11 +2222,121 @@ class ResidentRuntime:
         self.scheduler.signal()
         return created
 
+    def create_public_engineering_loop(
+        self,
+        request: EngineeringLoopCreateRequest,
+    ) -> EngineeringLoopCreated:
+        """Compile untrusted API input into a frozen authority-bearing Contract."""
+
+        loop_pack = self.engineering_loop_packs.get(request.loop_pack)
+        if loop_pack is None:
+            raise ValueError(f"unsupported engineering loop pack: {request.loop_pack}")
+        if request.model_mode == "deepseek" and not os.getenv("DEEPSEEK_API_KEY"):
+            raise ValueError("DEEPSEEK_API_KEY is required for deepseek mode")
+        if request.loop_pack != "repo-quality":
+            raise ValueError(
+                f"loop pack has no public contract compiler: {request.loop_pack}"
+            )
+        internal = EngineeringLoopRequest(
+            request_id=request.request_id,
+            title=request.title,
+            objective=request.objective,
+            exit_criteria=request.exit_criteria,
+            loop_pack=request.loop_pack,
+            worker=WorkerProfile(
+                execution_mode="single",
+                model_mode=request.model_mode,
+                task_pack=loop_pack.task_pack.task_pack_id,
+                model_budget=request.model_budget.model_dump(mode="json"),
+            ),
+            metric=MetricContract(
+                name="quality_score",
+                direction=MetricDirection.MAXIMIZE,
+                target=Decimal("1"),
+                evaluator_version="repo-quality-v1",
+            ),
+            budget=EngineeringLoopBudget(
+                max_iterations=request.budget.max_iterations,
+                max_no_progress_iterations=(
+                    request.budget.max_no_progress_iterations
+                ),
+            ),
+            promotion_mode=PromotionMode.AUTO_DISPOSABLE,
+            permissions=tuple(sorted(loop_pack.required_permissions)),
+            initial_state_ref="loop-pack://initial",
+            input_payload={"fixture": "quality-climb-v1"},
+        )
+        return self.create_engineering_loop(internal)
+
     def engineering_loop(self, loop_id: str) -> EngineeringLoopReport:
         return self.engineering_loop_service.report(loop_id)
 
     def engineering_loops(self) -> list[EngineeringLoopReport]:
         return self.engineering_loop_service.list_reports()
+
+    def advance_engineering_loop(self, loop_id: str) -> bool:
+        self.engineering_loop_service.contract(loop_id)
+        advanced = self._advance_engineering_loop(loop_id)
+        if advanced:
+            self.scheduler.signal()
+        return advanced
+
+    def cancel_engineering_loop(
+        self,
+        loop_id: str,
+        request: EngineeringLoopCancelRequest,
+    ) -> EngineeringLoopReport:
+        def cancel_child(run_id: str, reason: str) -> None:
+            try:
+                self.cancel_run(
+                    run_id,
+                    reason=f"parent_engineering_loop_cancelled:{loop_id}:{reason}",
+                )
+            except KeyError:
+                # The stable child identity may be linked before Prepare publishes a Run.
+                return
+
+        report = self.engineering_loop_service.cancel(
+            loop_id,
+            request,
+            cancel_child=cancel_child,
+        )
+        self.scheduler.signal()
+        return report
+
+    def pause_engineering_loop(
+        self,
+        loop_id: str,
+        request: EngineeringLoopPauseRequest,
+    ) -> EngineeringLoopReport:
+        report = self.engineering_loop_service.pause(loop_id, request)
+        self.scheduler.signal()
+        return report
+
+    def resume_engineering_loop(
+        self,
+        loop_id: str,
+        request: EngineeringLoopResumeRequest,
+    ) -> EngineeringLoopReport:
+        report = self.engineering_loop_service.resume(loop_id, request)
+        self.scheduler.signal()
+        return report
+
+    def _reconcile_engineering_loop_controls(
+        self,
+        loop_id: str | None = None,
+    ) -> bool:
+        reports = (
+            [self.engineering_loop_service.report(loop_id)]
+            if loop_id is not None
+            else self.engineering_loop_service.list_reports()
+        )
+        for report in reports:
+            if report.status not in {"pausing", "resuming"}:
+                continue
+            if self.engineering_loop_service.reconcile_control(report.loop_id):
+                return True
+        return False
 
     def _advance_engineering_control(self) -> bool:
         """Advance at most one durable parent phase per scheduler cycle."""
@@ -2222,38 +2344,49 @@ class ResidentRuntime:
         for report in self.engineering_loop_service.list_reports():
             if report.status != "running":
                 continue
-            loop_pack = self.engineering_loop_packs.get(report.contract.loop_pack)
-            if loop_pack is None:
-                raise RuntimeError(
-                    f"persisted engineering loop uses an unknown pack: "
-                    f"{report.contract.loop_pack}"
-                )
-            self._assert_engineering_loop_pack_authorized(
-                report.contract,
-                loop_pack,
-            )
-            return self.engineering_loop_service.advance_one(
-                report.loop_id,
-                propose=loop_pack.propose,
-                launch_child=lambda contract, identity, candidate: (
-                    self._launch_engineering_child(
-                        loop_pack,
-                        contract,
-                        identity,
-                        candidate,
-                    )
-                ),
-                child_outcome=self._engineering_child_outcome,
-                evaluate=loop_pack.evaluate,
-            )
+            if self._advance_engineering_loop(report.loop_id):
+                return True
         return False
+
+    def _advance_engineering_loop(self, loop_id: str) -> bool:
+        report = self.engineering_loop_service.report(loop_id)
+        if report.status != "running":
+            return False
+        loop_pack = self.engineering_loop_packs.get(report.contract.loop_pack)
+        if loop_pack is None:
+            raise RuntimeError(
+                "persisted engineering loop uses an unknown pack: "
+                f"{report.contract.loop_pack}"
+            )
+        self._ensure_engineering_loop_pack_authorized(report.contract, loop_pack)
+        return self.engineering_loop_service.advance_one(
+            report.loop_id,
+            propose=loop_pack.propose,
+            launch_child=lambda contract, identity, candidate: (
+                self._launch_engineering_child(
+                    loop_pack,
+                    contract,
+                    identity,
+                    candidate,
+                )
+            ),
+            child_outcome=self._engineering_child_outcome,
+            evaluate=loop_pack.evaluate,
+        )
 
     def _persist_engineering_loop_pack_authorization(
         self,
         created: EngineeringLoopCreated,
         loop_pack: LoopPack,
     ) -> None:
-        events = self.store.read_all(run_id=created.loop_id)
+        self._ensure_engineering_loop_pack_authorized(created.contract, loop_pack)
+
+    def _ensure_engineering_loop_pack_authorized(
+        self,
+        contract: EngineeringLoopContract,
+        loop_pack: LoopPack,
+    ) -> None:
+        events = self.store.read_all(run_id=contract.loop_id)
         authorizations = [
             event
             for event in events
@@ -2265,12 +2398,12 @@ class ResidentRuntime:
             )
             self._append_deterministic(
                 contract_event,
-                f"engineering-loop-pack-authorized:{created.loop_id}",
+                f"engineering-loop-pack-authorized:{contract.loop_id}",
                 "engineering.loop_pack.authorized",
                 self._loop_pack_authorization(loop_pack),
                 source="runtime.engineering-loop",
             )
-        self._assert_engineering_loop_pack_authorized(created.contract, loop_pack)
+        self._assert_engineering_loop_pack_authorized(contract, loop_pack)
 
     def _assert_engineering_loop_pack_authorized(
         self,
@@ -3091,6 +3224,10 @@ class ResidentRuntime:
             self._reconcile_pauses()
             self._reconcile_resumes()
             self._reconcile_agent_nudges()
+            if self._reconcile_engineering_loop_controls():
+                control_steps += 1
+                waits_without_progress = 0
+                continue
             if self._advance_eval_control():
                 control_steps += 1
                 waits_without_progress = 0
@@ -3229,6 +3366,65 @@ class ResidentRuntime:
         ):
             raise RuntimeError(
                 f"eval campaign did not become idle after {max_steps} scoped steps"
+            )
+        return steps
+
+    def run_engineering_loop_until_idle(
+        self,
+        loop_id: str,
+        *,
+        max_steps: int = 500,
+    ) -> int:
+        """Advance one parent Loop and only the canonical child Runs it owns."""
+
+        self.engineering_loop_service.contract(loop_id)
+        steps = 0
+        waits_without_progress = 0
+        while steps < max_steps:
+            self._reconcile_routes()
+            self._reconcile_failed_runs()
+            self._reconcile_cancellations()
+            self._reconcile_pauses()
+            self._reconcile_resumes()
+            self._reconcile_agent_nudges()
+            if self._reconcile_engineering_loop_controls(loop_id):
+                steps += 1
+                waits_without_progress = 0
+                continue
+            report = self.engineering_loop_service.report(loop_id)
+            if report.status != "running":
+                return steps
+            if self._advance_engineering_loop(loop_id):
+                steps += 1
+                waits_without_progress = 0
+                continue
+
+            allowed = frozenset(
+                iteration.identity.child_run_id for iteration in report.iterations
+            )
+            if allowed and self.scheduler.run_once(allowed_run_ids=allowed):
+                steps += 1
+                waits_without_progress = 0
+                continue
+            if allowed and any(
+                self.scheduler.in_flight_for_run(run_id) for run_id in allowed
+            ):
+                before = self.scheduler.completed_steps
+                self.scheduler.wait_for_progress(completed_steps=before, timeout=0.05)
+                waits_without_progress = (
+                    waits_without_progress + 1
+                    if self.scheduler.completed_steps == before
+                    else 0
+                )
+                if waits_without_progress < max_steps:
+                    continue
+            break
+
+        if self.engineering_loop_service.report(loop_id).status == "running" and (
+            steps >= max_steps or waits_without_progress >= max_steps
+        ):
+            raise RuntimeError(
+                f"engineering loop did not become idle after {max_steps} scoped steps"
             )
         return steps
 

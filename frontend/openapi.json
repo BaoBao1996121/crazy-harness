@@ -432,6 +432,458 @@
         }
       }
     },
+    "/api/engineering-loops": {
+      "get": {
+        "summary": "List Engineering Loops",
+        "operationId": "list_engineering_loops_api_engineering_loops_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EngineeringLoopReport"
+                  },
+                  "type": "array",
+                  "title": "Response List Engineering Loops Api Engineering Loops Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Engineering Loop",
+        "operationId": "create_engineering_loop_api_engineering_loops_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringLoopCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid loop request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Loop conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}": {
+      "get": {
+        "summary": "Get Engineering Loop",
+        "operationId": "get_engineering_loop_api_engineering_loops__loop_id__get",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}/advance": {
+      "post": {
+        "summary": "Advance Engineering Loop",
+        "operationId": "advance_engineering_loop_api_engineering_loops__loop_id__advance_post",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopAdvanceResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Advance conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}/drain": {
+      "post": {
+        "summary": "Drain Engineering Loop",
+        "operationId": "drain_engineering_loop_api_engineering_loops__loop_id__drain_post",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopDrainResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Drain conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}/pause": {
+      "post": {
+        "summary": "Pause Engineering Loop",
+        "operationId": "pause_engineering_loop_api_engineering_loops__loop_id__pause_post",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringLoopPauseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pause conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}/resume": {
+      "post": {
+        "summary": "Resume Engineering Loop",
+        "operationId": "resume_engineering_loop_api_engineering_loops__loop_id__resume_post",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringLoopResumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resume conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/engineering-loops/{loop_id}/cancel": {
+      "post": {
+        "summary": "Cancel Engineering Loop",
+        "operationId": "cancel_engineering_loop_api_engineering_loops__loop_id__cancel_post",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringLoopCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineeringLoopReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Loop not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cancel conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/{run_id}/drain": {
       "post": {
         "summary": "Drain Run",
@@ -2167,6 +2619,63 @@
         ],
         "title": "CancelResult"
       },
+      "CandidateProposal": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "iteration": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Iteration"
+          },
+          "base_state_ref": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Base State Ref"
+          },
+          "change_set": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Change Set"
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Rationale"
+          },
+          "expected_effect": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Expected Effect"
+          },
+          "proposer_attestation": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Proposer Attestation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "iteration",
+          "base_state_ref",
+          "change_set",
+          "rationale",
+          "expected_effect",
+          "proposer_attestation"
+        ],
+        "title": "CandidateProposal"
+      },
       "CapabilityManifestView": {
         "properties": {
           "run_id": {
@@ -2593,6 +3102,72 @@
         ],
         "title": "CheckpointStateRefs"
       },
+      "ChildRunOutcome": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "terminal_event_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Terminal Event Id"
+          },
+          "candidate_state_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate State Ref"
+          },
+          "artifact_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Artifact Refs",
+            "default": []
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Evidence Refs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "task_id",
+          "status",
+          "terminal_event_id",
+          "evidence_refs"
+        ],
+        "title": "ChildRunOutcome"
+      },
       "ContextView": {
         "properties": {
           "run_id": {
@@ -2720,6 +3295,599 @@
           "status"
         ],
         "title": "DreamJobView"
+      },
+      "EngineeringIterationIdentity": {
+        "properties": {
+          "iteration": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Iteration"
+          },
+          "iteration_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Iteration Id"
+          },
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "child_run_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Child Run Id"
+          },
+          "child_task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Child Task Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "iteration",
+          "iteration_id",
+          "candidate_id",
+          "child_run_id",
+          "child_task_id"
+        ],
+        "title": "EngineeringIterationIdentity"
+      },
+      "EngineeringIterationReport": {
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/EngineeringIterationIdentity"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "candidate_proposed",
+              "candidate_validated",
+              "candidate_rejected",
+              "running",
+              "completed",
+              "failed",
+              "evaluated",
+              "decided"
+            ],
+            "title": "Status"
+          },
+          "base_state_ref": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Base State Ref"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChildRunOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IterationEvaluation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoopDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "identity",
+          "status",
+          "base_state_ref"
+        ],
+        "title": "EngineeringIterationReport"
+      },
+      "EngineeringLoopAdvanceResult": {
+        "properties": {
+          "loop_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Id"
+          },
+          "advanced": {
+            "type": "boolean",
+            "title": "Advanced"
+          },
+          "report": {
+            "$ref": "#/components/schemas/EngineeringLoopReport"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "advanced",
+          "report"
+        ],
+        "title": "EngineeringLoopAdvanceResult"
+      },
+      "EngineeringLoopBudget": {
+        "properties": {
+          "max_iterations": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Iterations",
+            "default": 3
+          },
+          "max_no_progress_iterations": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Max No Progress Iterations",
+            "default": 2
+          },
+          "max_total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Tokens"
+          },
+          "max_total_cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Cost Usd"
+          },
+          "max_wall_time_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Wall Time Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EngineeringLoopBudget"
+      },
+      "EngineeringLoopCancelRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "title": "EngineeringLoopCancelRequest"
+      },
+      "EngineeringLoopContract": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "engineering-loop-v1",
+            "title": "Schema Version",
+            "default": "engineering-loop-v1"
+          },
+          "loop_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Id"
+          },
+          "request_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Request Fingerprint"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "objective": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Objective"
+          },
+          "exit_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Exit Criteria"
+          },
+          "loop_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Pack"
+          },
+          "worker": {
+            "$ref": "#/components/schemas/WorkerProfile"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/MetricContract"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/EngineeringLoopBudget"
+          },
+          "promotion_mode": {
+            "$ref": "#/components/schemas/PromotionMode",
+            "default": "auto_disposable"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Permissions",
+            "default": []
+          },
+          "initial_state_ref": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Initial State Ref"
+          },
+          "input_payload": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Input Payload"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "request_fingerprint",
+          "title",
+          "objective",
+          "exit_criteria",
+          "loop_pack",
+          "worker",
+          "metric",
+          "budget",
+          "initial_state_ref"
+        ],
+        "title": "EngineeringLoopContract"
+      },
+      "EngineeringLoopCreateRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "objective": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Objective"
+          },
+          "exit_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Exit Criteria"
+          },
+          "loop_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Pack"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode",
+            "default": "scripted"
+          },
+          "model_budget": {
+            "$ref": "#/components/schemas/ModelBudgetConfig"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/EngineeringLoopPublicBudget"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "title",
+          "objective",
+          "exit_criteria",
+          "loop_pack"
+        ],
+        "title": "EngineeringLoopCreateRequest",
+        "description": "Untrusted public input; Harness compiles the authority-bearing fields."
+      },
+      "EngineeringLoopCreated": {
+        "properties": {
+          "loop_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "running",
+            "title": "Status",
+            "default": "running"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/EngineeringLoopContract"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "contract"
+        ],
+        "title": "EngineeringLoopCreated"
+      },
+      "EngineeringLoopDrainResult": {
+        "properties": {
+          "loop_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Id"
+          },
+          "steps": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Steps"
+          },
+          "report": {
+            "$ref": "#/components/schemas/EngineeringLoopReport"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "steps",
+          "report"
+        ],
+        "title": "EngineeringLoopDrainResult"
+      },
+      "EngineeringLoopPauseRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "title": "EngineeringLoopPauseRequest"
+      },
+      "EngineeringLoopPublicBudget": {
+        "properties": {
+          "max_iterations": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Iterations",
+            "default": 3
+          },
+          "max_no_progress_iterations": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Max No Progress Iterations",
+            "default": 2
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EngineeringLoopPublicBudget",
+        "description": "Only parent limits that the v1 runtime actually enforces."
+      },
+      "EngineeringLoopReport": {
+        "properties": {
+          "loop_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Loop Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "pausing",
+              "paused",
+              "resuming",
+              "awaiting_approval",
+              "completed",
+              "blocked",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/EngineeringLoopContract"
+          },
+          "active_state_ref": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Active State Ref"
+          },
+          "active_score": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Score"
+          },
+          "pending_state_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending State Ref"
+          },
+          "no_progress_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "No Progress Count"
+          },
+          "iterations": {
+            "items": {
+              "$ref": "#/components/schemas/EngineeringIterationReport"
+            },
+            "type": "array",
+            "title": "Iterations",
+            "default": []
+          },
+          "terminal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "status",
+          "contract",
+          "active_state_ref",
+          "no_progress_count"
+        ],
+        "title": "EngineeringLoopReport"
+      },
+      "EngineeringLoopResumeRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "title": "EngineeringLoopResumeRequest"
       },
       "EvalCampaignContract": {
         "properties": {
@@ -3331,6 +4499,80 @@
         ],
         "title": "HealthView"
       },
+      "IterationEvaluation": {
+        "properties": {
+          "iteration": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Iteration"
+          },
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "candidate_state_ref": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate State Ref"
+          },
+          "evaluator_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Evaluator Version"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Metrics"
+          },
+          "hard_gates": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "minProperties": 1,
+            "title": "Hard Gates"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Evidence Refs"
+          },
+          "valid": {
+            "type": "boolean",
+            "title": "Valid"
+          },
+          "invalid_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid Reasons",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "iteration",
+          "candidate_id",
+          "candidate_state_ref",
+          "evaluator_version",
+          "metrics",
+          "hard_gates",
+          "evidence_refs",
+          "valid"
+        ],
+        "title": "IterationEvaluation"
+      },
       "JsonValue": {},
       "KernelDecision": {
         "properties": {
@@ -3465,6 +4707,93 @@
         ],
         "title": "LeaseView"
       },
+      "LoopDecision": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LoopDecisionKind"
+          },
+          "iteration": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Iteration"
+          },
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "active_state_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active State Ref"
+          },
+          "pending_state_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending State Ref"
+          },
+          "next_no_progress_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Next No Progress Count"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "iteration",
+          "candidate_id",
+          "accepted",
+          "next_no_progress_count",
+          "reason"
+        ],
+        "title": "LoopDecision"
+      },
+      "LoopDecisionKind": {
+        "type": "string",
+        "enum": [
+          "accept_continue",
+          "reject_continue",
+          "complete",
+          "awaiting_approval",
+          "blocked"
+        ],
+        "title": "LoopDecisionKind"
+      },
       "LoopPhase": {
         "type": "string",
         "enum": [
@@ -3581,6 +4910,45 @@
           "status"
         ],
         "title": "MemoryView"
+      },
+      "MetricContract": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/MetricDirection"
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Target"
+          },
+          "evaluator_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Evaluator Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "direction",
+          "target",
+          "evaluator_version"
+        ],
+        "title": "MetricContract"
+      },
+      "MetricDirection": {
+        "type": "string",
+        "enum": [
+          "maximize",
+          "minimize"
+        ],
+        "title": "MetricDirection"
       },
       "ModelBudgetConfig": {
         "properties": {
@@ -4205,6 +5573,15 @@
           "depth"
         ],
         "title": "PeerProbeRequest"
+      },
+      "PromotionMode": {
+        "type": "string",
+        "enum": [
+          "auto_disposable",
+          "approval_required",
+          "candidate_only"
+        ],
+        "title": "PromotionMode"
       },
       "QueuedDeliveryView": {
         "properties": {
@@ -5168,6 +6545,46 @@
           "updated_at"
         ],
         "title": "WorkClaimView"
+      },
+      "WorkerProfile": {
+        "properties": {
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "team"
+            ],
+            "title": "Execution Mode"
+          },
+          "model_mode": {
+            "type": "string",
+            "enum": [
+              "scripted",
+              "deepseek"
+            ],
+            "title": "Model Mode"
+          },
+          "task_pack": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Pack"
+          },
+          "model_budget": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Model Budget"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "execution_mode",
+          "model_mode",
+          "task_pack"
+        ],
+        "title": "WorkerProfile"
       },
       "WorkspaceFileEntry": {
         "properties": {

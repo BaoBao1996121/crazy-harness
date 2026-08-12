@@ -1,6 +1,8 @@
 import type { components } from "./schema";
 
 export type Snapshot = components["schemas"]["SnapshotView"];
+export type Health = components["schemas"]["HealthView"];
+export type RuntimeView = components["schemas"]["RuntimeView"];
 export type EventPage = components["schemas"]["EventPage"];
 export type EventRecord = components["schemas"]["EventRecord"];
 export type RunCreated = components["schemas"]["RunCreated"];
@@ -17,6 +19,15 @@ export type EvalCampaignDraft = Omit<EvalCampaignRequest, "request_id">;
 export type EvalCampaignCreated = components["schemas"]["EvalCampaignCreated"];
 export type EvalCampaignReport = components["schemas"]["EvalCampaignReport"];
 export type CampaignTrialSummary = components["schemas"]["CampaignTrialSummary"];
+export type EngineeringLoopRequest = components["schemas"]["EngineeringLoopCreateRequest"];
+export type EngineeringLoopDraft = Omit<EngineeringLoopRequest, "request_id">;
+export type EngineeringLoopCreated = components["schemas"]["EngineeringLoopCreated"];
+export type EngineeringLoopReport = components["schemas"]["EngineeringLoopReport"];
+export type EngineeringLoopAdvanceResult = components["schemas"]["EngineeringLoopAdvanceResult"];
+export type EngineeringLoopDrainResult = components["schemas"]["EngineeringLoopDrainResult"];
+export type EngineeringLoopPauseRequest = components["schemas"]["EngineeringLoopPauseRequest"];
+export type EngineeringLoopResumeRequest = components["schemas"]["EngineeringLoopResumeRequest"];
+export type EngineeringLoopCancelRequest = components["schemas"]["EngineeringLoopCancelRequest"];
 export type Checkpoint = components["schemas"]["CheckpointContract"];
 export type CheckpointCreateRequest = components["schemas"]["CheckpointCreateRequest"];
 export type CheckpointRestoreRequest = components["schemas"]["CheckpointRestoreRequest"];
@@ -75,6 +86,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  health: () => request<Health>("/api/health"),
   createEvalPair: (body: PairedEvalRequest) =>
     request<PairedEvalCreated>("/api/evals/pairs", {
       method: "POST",
@@ -107,6 +119,42 @@ export const api = {
     request<EvalCampaignReport>(
       `/api/evals/campaigns/${encodeURIComponent(campaignId)}/cancel`,
       { method: "POST" },
+    ),
+  createEngineeringLoop: (body: EngineeringLoopRequest) =>
+    request<EngineeringLoopCreated>("/api/engineering-loops", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listEngineeringLoops: () =>
+    request<EngineeringLoopReport[]>("/api/engineering-loops"),
+  engineeringLoop: (loopId: string) =>
+    request<EngineeringLoopReport>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}`,
+    ),
+  advanceEngineeringLoop: (loopId: string) =>
+    request<EngineeringLoopAdvanceResult>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}/advance`,
+      { method: "POST" },
+    ),
+  drainEngineeringLoop: (loopId: string) =>
+    request<EngineeringLoopDrainResult>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}/drain`,
+      { method: "POST" },
+    ),
+  pauseEngineeringLoop: (loopId: string, body: EngineeringLoopPauseRequest) =>
+    request<EngineeringLoopReport>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}/pause`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  resumeEngineeringLoop: (loopId: string, body: EngineeringLoopResumeRequest) =>
+    request<EngineeringLoopReport>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}/resume`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  cancelEngineeringLoop: (loopId: string, body: EngineeringLoopCancelRequest) =>
+    request<EngineeringLoopReport>(
+      `/api/engineering-loops/${encodeURIComponent(loopId)}/cancel`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
   createRun: (body: TaskRequest) =>
     request<RunCreated>("/api/runs", { method: "POST", body: JSON.stringify(body) }),

@@ -9,17 +9,19 @@ import {
   Layers3,
   ListTodo,
   Radio,
+  RefreshCcw,
   Scale,
   SlidersHorizontal,
   Waves,
 } from "lucide-react";
 
-import type { Snapshot } from "../api/client";
+import type { RuntimeView, Snapshot } from "../api/client";
 import { statusLabel, streamLabel } from "../lib/i18n";
 import { normalizeScheduler, schedulerPressure } from "../lib/scheduler";
 
 interface TopBarProps {
   snapshot: Snapshot | null;
+  runtime?: RuntimeView | null;
   streamState: "connecting" | "live" | "reconnecting" | "offline";
   eventCount: number;
   busy: boolean;
@@ -27,6 +29,7 @@ interface TopBarProps {
   onNewRun: () => void;
   onNewEval: () => void;
   onNewCampaign: () => void;
+  onNewEngineeringLoop: () => void;
   onCheckpoints: () => void;
   onAgentControl: () => void;
   onCancel: () => void;
@@ -35,6 +38,7 @@ interface TopBarProps {
 
 export function TopBar({
   snapshot,
+  runtime,
   streamState,
   eventCount,
   busy,
@@ -42,13 +46,14 @@ export function TopBar({
   onNewRun,
   onNewEval,
   onNewCampaign,
+  onNewEngineeringLoop,
   onCheckpoints,
   onAgentControl,
   onCancel,
   onChaos,
 }: TopBarProps) {
   const run = snapshot?.run;
-  const scheduler = normalizeScheduler(snapshot?.runtime.scheduler);
+  const scheduler = normalizeScheduler(snapshot?.runtime.scheduler ?? runtime?.scheduler);
   const pressure = schedulerPressure(scheduler);
   const canCancel = Boolean(
     run && !["succeeded", "failed", "cancelled", "cancelling"].includes(run.status),
@@ -150,6 +155,15 @@ export function TopBar({
         >
           <Scale size={17} aria-hidden="true" />
           <span>公平评测 / Eval</span>
+        </button>
+        <button
+          className="icon-command loop-command"
+          onClick={onNewEngineeringLoop}
+          disabled={busy}
+          title="创建可恢复的工程改进循环 / Create durable engineering loop"
+        >
+          <RefreshCcw size={17} />
+          <span>工程循环 / Loop</span>
         </button>
         <button
           className="icon-command campaign-command"

@@ -9,6 +9,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from crazy_harness.control_plane.model_governance import ModelBudgetConfig
 from crazy_harness.control_plane.store import SQLiteEventStore
 from crazy_harness.core.engineering_loops import (
     CandidateProposal,
@@ -50,6 +51,69 @@ class EngineeringLoopRequest(BaseModel):
     permissions: tuple[str, ...] = ()
     initial_state_ref: str = Field(min_length=1)
     input_payload: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class EngineeringLoopPublicBudget(BaseModel):
+    """Only parent limits that the v1 runtime actually enforces."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_iterations: int = Field(default=3, ge=1, le=100)
+    max_no_progress_iterations: int = Field(default=2, ge=0, le=100)
+
+
+class EngineeringLoopCreateRequest(BaseModel):
+    """Untrusted public input; Harness compiles the authority-bearing fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    title: str = Field(min_length=1, max_length=120)
+    objective: str = Field(min_length=1, max_length=4000)
+    exit_criteria: tuple[str, ...] = Field(min_length=1)
+    loop_pack: str = Field(min_length=1)
+    model_mode: Literal["scripted", "deepseek"] = "scripted"
+    model_budget: ModelBudgetConfig = Field(default_factory=ModelBudgetConfig)
+    budget: EngineeringLoopPublicBudget = Field(
+        default_factory=EngineeringLoopPublicBudget
+    )
+
+
+class EngineeringLoopCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class EngineeringLoopPauseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class EngineeringLoopResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class EngineeringLoopCreated(BaseModel):
@@ -107,6 +171,9 @@ class EngineeringLoopReport(BaseModel):
     loop_id: str = Field(min_length=1)
     status: Literal[
         "running",
+        "pausing",
+        "paused",
+        "resuming",
         "awaiting_approval",
         "completed",
         "blocked",
@@ -119,6 +186,22 @@ class EngineeringLoopReport(BaseModel):
     no_progress_count: int = Field(ge=0)
     iterations: tuple[EngineeringIterationReport, ...] = ()
     terminal_reason: str | None = None
+
+
+class EngineeringLoopAdvanceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    loop_id: str = Field(min_length=1)
+    advanced: bool
+    report: EngineeringLoopReport
+
+
+class EngineeringLoopDrainResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    loop_id: str = Field(min_length=1)
+    steps: int = Field(ge=0)
+    report: EngineeringLoopReport
 
 
 ProposeCandidate = Callable[
@@ -137,6 +220,7 @@ EvaluateIteration = Callable[
     [EngineeringLoopContract, CandidateProposal, ChildRunOutcome],
     IterationEvaluation,
 ]
+CancelChild = Callable[[str, str], None]
 FaultInjector = Callable[[str], None]
 
 
@@ -328,6 +412,9 @@ class EngineeringLoopService:
             raise RuntimeError(f"engineering loop has multiple terminal facts: {loop_id}")
         status: Literal[
             "running",
+            "pausing",
+            "paused",
+            "resuming",
             "awaiting_approval",
             "completed",
             "blocked",
@@ -348,6 +435,10 @@ class EngineeringLoopService:
                 is LoopDecisionKind.AWAITING_APPROVAL
             ):
                 status = "awaiting_approval"
+        if not terminal_events and status != "awaiting_approval":
+            control_status = self._control_status(events)
+            if control_status is not None:
+                status = control_status
         return EngineeringLoopReport(
             loop_id=loop_id,
             status=status,
@@ -366,6 +457,182 @@ class EngineeringLoopService:
             for event in self.store.read_all(event_type="engineering.loop.created")
         }
         return [self.report(loop_id) for loop_id in sorted(loop_ids)]
+
+    def cancel(
+        self,
+        loop_id: str,
+        request: EngineeringLoopCancelRequest,
+        *,
+        cancel_child: CancelChild,
+    ) -> EngineeringLoopReport:
+        """Persist cancellation intent before touching a possibly active child Run."""
+
+        owner_id = f"engineering-loop-cancel:{uuid4().hex}"
+        claims = self.store.claim_work(
+            claim_keys=(f"engineering-loop-advance:{loop_id}",),
+            owner_id=owner_id,
+            ttl_seconds=self._ADVANCE_CLAIM_TTL_SECONDS,
+        )
+        if claims is None:
+            raise TimeoutError("engineering loop control is already in progress")
+        closed = False
+        try:
+            current = self.report(loop_id)
+            payload = {
+                "request_id": request.request_id,
+                "reason": request.reason,
+            }
+            requested = self._events(loop_id, "engineering.loop.cancellation.requested")
+            if len(requested) > 1:
+                raise RuntimeError("engineering loop has multiple cancellation intents")
+            if requested and requested[0].payload != payload:
+                raise EngineeringLoopIdempotencyConflict(
+                    "engineering loop cancellation key was reused with different input"
+                )
+            if current.status == "cancelled":
+                closed = self.store.finish_work_claims(
+                    claims=claims,
+                    owner_id=owner_id,
+                    state="completed",
+                )
+                return current
+            if current.status in {"completed", "blocked"}:
+                raise ValueError(
+                    f"terminal engineering loop cannot be cancelled: {current.status}"
+                )
+            request_event = requested[0] if requested else self.store.append(
+                self._event(
+                    loop_id,
+                    f"cancellation-request:{request.request_id}",
+                    "engineering.loop.cancellation.requested",
+                    payload,
+                )
+            )
+            active_child = self._active_child_run_id(current)
+            if active_child is not None:
+                cancel_child(active_child, request.reason)
+            event = self._terminal_event(
+                loop_id,
+                "cancelled",
+                "engineering.loop.cancelled",
+                {
+                    **payload,
+                    "request_event_id": request_event.id,
+                    "active_child_run_id": active_child,
+                },
+            )
+            closed = self.store.finish_work_claims(
+                claims=claims,
+                owner_id=owner_id,
+                state="completed",
+                final_event=event,
+            )
+            if not closed:
+                raise RuntimeError("engineering loop cancellation claim was lost")
+            return self.report(loop_id)
+        finally:
+            if not closed:
+                self.store.finish_work_claims(
+                    claims=claims,
+                    owner_id=owner_id,
+                    state="released",
+                )
+
+    def pause(
+        self,
+        loop_id: str,
+        request: EngineeringLoopPauseRequest,
+    ) -> EngineeringLoopReport:
+        current = self.report(loop_id)
+        if current.status in {"completed", "blocked", "cancelled"}:
+            raise ValueError(
+                f"terminal engineering loop cannot be paused: {current.status}"
+            )
+        self._append_control_request(
+            loop_id,
+            kind="pause",
+            request_id=request.request_id,
+            reason=request.reason,
+        )
+        self.reconcile_control(loop_id)
+        return self.report(loop_id)
+
+    def resume(
+        self,
+        loop_id: str,
+        request: EngineeringLoopResumeRequest,
+    ) -> EngineeringLoopReport:
+        current = self.report(loop_id)
+        if current.status in {"completed", "blocked", "cancelled"}:
+            raise ValueError(
+                f"terminal engineering loop cannot be resumed: {current.status}"
+            )
+        if current.status == "running" and not self._events(
+            loop_id, "engineering.loop.resume.requested"
+        ):
+            raise ValueError("running engineering loop cannot be resumed")
+        self._append_control_request(
+            loop_id,
+            kind="resume",
+            request_id=request.request_id,
+            reason=request.reason,
+        )
+        self.reconcile_control(loop_id)
+        return self.report(loop_id)
+
+    def reconcile_control(self, loop_id: str) -> bool:
+        """Settle the latest durable pause/resume intent under the advance barrier."""
+
+        current = self.report(loop_id)
+        event_type = {
+            "pausing": "engineering.loop.paused",
+            "resuming": "engineering.loop.resumed",
+        }.get(current.status)
+        if event_type is None:
+            return False
+        request_event = self._latest_control_request(loop_id)
+        owner_id = f"engineering-loop-control:{uuid4().hex}"
+        claims = self.store.claim_work(
+            claim_keys=(f"engineering-loop-advance:{loop_id}",),
+            owner_id=owner_id,
+            ttl_seconds=self._ADVANCE_CLAIM_TTL_SECONDS,
+        )
+        if claims is None:
+            return False
+        closed = False
+        try:
+            if self.report(loop_id).status != current.status:
+                closed = self.store.finish_work_claims(
+                    claims=claims,
+                    owner_id=owner_id,
+                    state="released",
+                )
+                return False
+            event = self._event(
+                loop_id,
+                f"control-applied:{request_event.id}",
+                event_type,
+                {
+                    "request_id": request_event.payload["request_id"],
+                    "reason": request_event.payload["reason"],
+                    "request_event_id": request_event.id,
+                },
+                causation_id=request_event.id,
+            )
+            closed = self.store.finish_work_claims(
+                claims=claims,
+                owner_id=owner_id,
+                state="completed",
+                final_event=event,
+            )
+            return closed
+        finally:
+            if not closed:
+                self.store.finish_work_claims(
+                    claims=claims,
+                    owner_id=owner_id,
+                    state="released",
+                )
 
     def advance_one(
         self,
@@ -638,6 +905,65 @@ class EngineeringLoopService:
         return None, None
 
     @staticmethod
+    def _active_child_run_id(report: EngineeringLoopReport) -> str | None:
+        if not report.iterations:
+            return None
+        current = report.iterations[-1]
+        if current.status != "running":
+            return None
+        return current.identity.child_run_id
+
+    def _append_control_request(
+        self,
+        loop_id: str,
+        *,
+        kind: Literal["pause", "resume"],
+        request_id: str,
+        reason: str,
+    ) -> Event:
+        event = self._event(
+            loop_id,
+            f"control-request:{kind}:{request_id}",
+            f"engineering.loop.{kind}.requested",
+            {"request_id": request_id, "reason": reason},
+        )
+        try:
+            return self.store.append(event)
+        except ValueError as exc:
+            raise EngineeringLoopIdempotencyConflict(
+                "engineering loop control request key was reused with different input"
+            ) from exc
+
+    def _latest_control_request(self, loop_id: str) -> Event:
+        requests = [
+            event
+            for event in self.store.read_all(run_id=loop_id)
+            if event.type
+            in {
+                "engineering.loop.pause.requested",
+                "engineering.loop.resume.requested",
+            }
+        ]
+        if not requests:
+            raise RuntimeError("engineering loop has no pending control request")
+        return requests[-1]
+
+    @staticmethod
+    def _control_status(
+        events: list[Event],
+    ) -> Literal["running", "pausing", "paused", "resuming"] | None:
+        mapping = {
+            "engineering.loop.pause.requested": "pausing",
+            "engineering.loop.paused": "paused",
+            "engineering.loop.resume.requested": "resuming",
+            "engineering.loop.resumed": "running",
+        }
+        controls = [event for event in events if event.type in mapping]
+        if not controls:
+            return None
+        return mapping[controls[-1].type]  # type: ignore[return-value]
+
+    @staticmethod
     def _candidate_rejection_reason(
         iteration: EngineeringIterationReport,
     ) -> str | None:
@@ -856,10 +1182,17 @@ class EngineeringLoopService:
 
 __all__ = [
     "ChildRunOutcome",
+    "EngineeringLoopAdvanceResult",
+    "EngineeringLoopCancelRequest",
+    "EngineeringLoopCreateRequest",
     "EngineeringIterationReport",
     "EngineeringLoopCreated",
+    "EngineeringLoopDrainResult",
     "EngineeringLoopIdempotencyConflict",
+    "EngineeringLoopPauseRequest",
+    "EngineeringLoopPublicBudget",
     "EngineeringLoopReport",
     "EngineeringLoopRequest",
+    "EngineeringLoopResumeRequest",
     "EngineeringLoopService",
 ]

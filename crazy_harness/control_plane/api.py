@@ -19,6 +19,17 @@ from crazy_harness.control_plane.eval_campaigns import (
     EvalCampaignReport,
     EvalCampaignRequest,
 )
+from crazy_harness.control_plane.engineering_loops import (
+    EngineeringLoopAdvanceResult,
+    EngineeringLoopCancelRequest,
+    EngineeringLoopCreateRequest,
+    EngineeringLoopCreated,
+    EngineeringLoopDrainResult,
+    EngineeringLoopIdempotencyConflict,
+    EngineeringLoopPauseRequest,
+    EngineeringLoopReport,
+    EngineeringLoopResumeRequest,
+)
 from crazy_harness.control_plane.checkpoints import (
     CheckpointCreateRequest,
     CheckpointIdempotencyConflict,
@@ -316,6 +327,238 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
                     "message": str(exc),
                     "retryable": True,
                 },
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops",
+        status_code=status.HTTP_201_CREATED,
+        response_model=EngineeringLoopCreated,
+        responses={
+            400: {"model": ApiErrorResponse, "description": "Invalid loop request"},
+            409: {"model": ApiErrorResponse, "description": "Loop conflict"},
+        },
+    )
+    def create_engineering_loop(
+        request: EngineeringLoopCreateRequest,
+    ) -> EngineeringLoopCreated:
+        try:
+            return runtime.create_public_engineering_loop(request)
+        except EngineeringLoopIdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(exc.code, str(exc)),
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(
+                    "engineering_loop_creation_in_progress",
+                    str(exc),
+                    retryable=True,
+                ),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_error_detail("engineering_loop_invalid_request", str(exc)),
+            ) from exc
+
+    @app.get(
+        "/api/engineering-loops",
+        response_model=list[EngineeringLoopReport],
+    )
+    def list_engineering_loops() -> list[EngineeringLoopReport]:
+        return runtime.engineering_loops()
+
+    @app.get(
+        "/api/engineering-loops/{loop_id}",
+        response_model=EngineeringLoopReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+        },
+    )
+    def get_engineering_loop(loop_id: str) -> EngineeringLoopReport:
+        try:
+            return runtime.engineering_loop(loop_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops/{loop_id}/advance",
+        response_model=EngineeringLoopAdvanceResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+            409: {"model": ApiErrorResponse, "description": "Advance conflict"},
+        },
+    )
+    def advance_engineering_loop(loop_id: str) -> EngineeringLoopAdvanceResult:
+        try:
+            advanced = runtime.advance_engineering_loop(loop_id)
+            return EngineeringLoopAdvanceResult(
+                loop_id=loop_id,
+                advanced=advanced,
+                report=runtime.engineering_loop(loop_id),
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail("engineering_loop_advance_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops/{loop_id}/drain",
+        response_model=EngineeringLoopDrainResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+            409: {"model": ApiErrorResponse, "description": "Drain conflict"},
+        },
+    )
+    def drain_engineering_loop(loop_id: str) -> EngineeringLoopDrainResult:
+        try:
+            steps = runtime.run_engineering_loop_until_idle(loop_id)
+            return EngineeringLoopDrainResult(
+                loop_id=loop_id,
+                steps=steps,
+                report=runtime.engineering_loop(loop_id),
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(
+                    "engineering_loop_drain_conflict",
+                    str(exc),
+                    retryable=True,
+                ),
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops/{loop_id}/pause",
+        response_model=EngineeringLoopReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+            409: {"model": ApiErrorResponse, "description": "Pause conflict"},
+        },
+    )
+    def pause_engineering_loop(
+        loop_id: str,
+        request: EngineeringLoopPauseRequest,
+    ) -> EngineeringLoopReport:
+        try:
+            return runtime.pause_engineering_loop(loop_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+        except EngineeringLoopIdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(exc.code, str(exc)),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail("engineering_loop_pause_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops/{loop_id}/resume",
+        response_model=EngineeringLoopReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+            409: {"model": ApiErrorResponse, "description": "Resume conflict"},
+        },
+    )
+    def resume_engineering_loop(
+        loop_id: str,
+        request: EngineeringLoopResumeRequest,
+    ) -> EngineeringLoopReport:
+        try:
+            return runtime.resume_engineering_loop(loop_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+        except EngineeringLoopIdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(exc.code, str(exc)),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail("engineering_loop_resume_conflict", str(exc)),
+            ) from exc
+
+    @app.post(
+        "/api/engineering-loops/{loop_id}/cancel",
+        response_model=EngineeringLoopReport,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Loop not found"},
+            409: {"model": ApiErrorResponse, "description": "Cancel conflict"},
+        },
+    )
+    def cancel_engineering_loop(
+        loop_id: str,
+        request: EngineeringLoopCancelRequest,
+    ) -> EngineeringLoopReport:
+        try:
+            return runtime.cancel_engineering_loop(loop_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=_error_detail(
+                    "engineering_loop_not_found",
+                    "engineering loop not found",
+                ),
+            ) from exc
+        except EngineeringLoopIdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(exc.code, str(exc)),
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail(
+                    "engineering_loop_cancellation_in_progress",
+                    str(exc),
+                    retryable=True,
+                ),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_error_detail("engineering_loop_cancel_conflict", str(exc)),
             ) from exc
 
     @app.post("/api/runs/{run_id}/drain", response_model=DrainResult)
