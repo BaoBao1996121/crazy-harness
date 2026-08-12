@@ -12,6 +12,10 @@ describe("shareable URL identity", () => {
       .toBeUndefined();
     expect(resolveIdentityParam("?run=run_shared", "campaign", "campaign_old"))
       .toBeUndefined();
+    expect(resolveIdentityParam("?loop=loop_shared", "run", "run_old"))
+      .toBeUndefined();
+    expect(resolveIdentityParam("?loop=loop_shared", "loop", "loop_old"))
+      .toBe("loop_shared");
     expect(resolveIdentityParam("", "run", "run_old")).toBe("run_old");
   });
 

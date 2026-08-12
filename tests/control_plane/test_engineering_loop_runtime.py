@@ -4,7 +4,10 @@ from decimal import Decimal
 
 import pytest
 
-from crazy_harness.control_plane.engineering_loops import EngineeringLoopRequest
+from crazy_harness.control_plane.engineering_loops import (
+    EngineeringLoopPauseRequest,
+    EngineeringLoopRequest,
+)
 from crazy_harness.control_plane.runtime import ResidentRuntime
 from crazy_harness.core.engineering_loops import (
     EngineeringLoopBudget,
@@ -183,3 +186,72 @@ def test_failed_engineering_child_without_snapshot_blocks_parent_loop(tmp_path) 
     blocked = runtime.engineering_loop(created.loop_id)
     assert blocked.status == "blocked"
     assert blocked.terminal_reason == failed.iterations[0].failure_reason
+
+
+def test_restart_repairs_contract_authorization_gap_before_iteration(tmp_path) -> None:
+    runtime = ResidentRuntime(tmp_path)
+    created = runtime.engineering_loop_service.create(_repo_quality_request())
+    assert not any(
+        event.type == "engineering.loop_pack.authorized"
+        for event in runtime.store.read_all(run_id=created.loop_id)
+    )
+
+    restarted = ResidentRuntime(tmp_path)
+    assert restarted.advance_engineering_loop(created.loop_id) is True
+    events = restarted.store.read_all(run_id=created.loop_id)
+
+    assert sum(event.type == "engineering.loop_pack.authorized" for event in events) == 1
+    assert sum(event.type == "engineering.iteration.planned" for event in events) == 1
+
+
+def test_waiting_engineering_loop_does_not_starve_a_ready_peer(tmp_path) -> None:
+    runtime = ResidentRuntime(tmp_path)
+    first = runtime.create_engineering_loop(_repo_quality_request())
+    second = runtime.create_engineering_loop(
+        _repo_quality_request().model_copy(
+            update={"request_id": "runtime-repo-quality-peer"}
+        )
+    )
+    for _ in range(4):
+        assert runtime.advance_engineering_loop(first.loop_id) is True
+
+    assert runtime.engineering_loop(first.loop_id).iterations[-1].status == "running"
+    assert runtime._advance_engineering_control() is True
+    assert runtime.engineering_loop(second.loop_id).iterations[0].status == "planned"
+
+
+def test_pending_pause_settles_after_advance_claim_release_and_restart(tmp_path) -> None:
+    runtime = ResidentRuntime(tmp_path)
+    created = runtime.create_engineering_loop(_repo_quality_request())
+    owner = "test-active-parent-step"
+    claims = runtime.store.claim_work(
+        claim_keys=(f"engineering-loop-advance:{created.loop_id}",),
+        owner_id=owner,
+        ttl_seconds=30,
+    )
+    assert claims is not None
+
+    pausing = runtime.pause_engineering_loop(
+        created.loop_id,
+        EngineeringLoopPauseRequest(
+            request_id="runtime-pause-pending-1",
+            reason="pause after the current parent phase",
+        ),
+    )
+    assert pausing.status == "pausing"
+    assert pausing.iterations == ()
+    assert runtime.store.finish_work_claims(
+        claims=claims,
+        owner_id=owner,
+        state="released",
+    )
+
+    restarted = ResidentRuntime(tmp_path)
+    assert restarted._reconcile_engineering_loop_controls() is True
+    paused = restarted.engineering_loop(created.loop_id)
+    assert paused.status == "paused"
+    assert paused.iterations == ()
+    assert sum(
+        event.type == "engineering.loop.paused"
+        for event in restarted.store.read_all(run_id=created.loop_id)
+    ) == 1

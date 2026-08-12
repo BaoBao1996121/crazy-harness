@@ -159,6 +159,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/engineering-loops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Engineering Loops */
+        get: operations["list_engineering_loops_api_engineering_loops_get"];
+        put?: never;
+        /** Create Engineering Loop */
+        post: operations["create_engineering_loop_api_engineering_loops_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Engineering Loop */
+        get: operations["get_engineering_loop_api_engineering_loops__loop_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}/advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Advance Engineering Loop */
+        post: operations["advance_engineering_loop_api_engineering_loops__loop_id__advance_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}/drain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drain Engineering Loop */
+        post: operations["drain_engineering_loop_api_engineering_loops__loop_id__drain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Engineering Loop */
+        post: operations["pause_engineering_loop_api_engineering_loops__loop_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Engineering Loop */
+        post: operations["resume_engineering_loop_api_engineering_loops__loop_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engineering-loops/{loop_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Engineering Loop */
+        post: operations["cancel_engineering_loop_api_engineering_loops__loop_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/drain": {
         parameters: {
             query?: never;
@@ -769,6 +889,27 @@ export interface components {
             /** Queued Cancelled */
             queued_cancelled: number;
         };
+        /** CandidateProposal */
+        CandidateProposal: {
+            /** Candidate Id */
+            candidate_id: string;
+            /** Iteration */
+            iteration: number;
+            /** Base State Ref */
+            base_state_ref: string;
+            /** Change Set */
+            change_set: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Rationale */
+            rationale: string;
+            /** Expected Effect */
+            expected_effect: string;
+            /** Proposer Attestation */
+            proposer_attestation: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+        };
         /** CapabilityManifestView */
         CapabilityManifestView: {
             /** Run Id */
@@ -962,6 +1103,29 @@ export interface components {
              */
             artifacts: components["schemas"]["VerifiedArtifactRef"][];
         };
+        /** ChildRunOutcome */
+        ChildRunOutcome: {
+            /** Run Id */
+            run_id: string;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "succeeded" | "failed" | "cancelled";
+            /** Terminal Event Id */
+            terminal_event_id: string;
+            /** Candidate State Ref */
+            candidate_state_ref?: string | null;
+            /**
+             * Artifact Refs
+             * @default []
+             */
+            artifact_refs: string[];
+            /** Evidence Refs */
+            evidence_refs: string[];
+        };
         /** ContextView */
         ContextView: {
             /** Run Id */
@@ -1012,6 +1176,207 @@ export interface components {
             memory_candidate_id?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** EngineeringIterationIdentity */
+        EngineeringIterationIdentity: {
+            /** Iteration */
+            iteration: number;
+            /** Iteration Id */
+            iteration_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Child Run Id */
+            child_run_id: string;
+            /** Child Task Id */
+            child_task_id: string;
+        };
+        /** EngineeringIterationReport */
+        EngineeringIterationReport: {
+            identity: components["schemas"]["EngineeringIterationIdentity"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "candidate_proposed" | "candidate_validated" | "candidate_rejected" | "running" | "completed" | "failed" | "evaluated" | "decided";
+            /** Base State Ref */
+            base_state_ref: string;
+            candidate?: components["schemas"]["CandidateProposal"] | null;
+            outcome?: components["schemas"]["ChildRunOutcome"] | null;
+            evaluation?: components["schemas"]["IterationEvaluation"] | null;
+            decision?: components["schemas"]["LoopDecision"] | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
+        };
+        /** EngineeringLoopAdvanceResult */
+        EngineeringLoopAdvanceResult: {
+            /** Loop Id */
+            loop_id: string;
+            /** Advanced */
+            advanced: boolean;
+            report: components["schemas"]["EngineeringLoopReport"];
+        };
+        /** EngineeringLoopBudget */
+        EngineeringLoopBudget: {
+            /**
+             * Max Iterations
+             * @default 3
+             */
+            max_iterations: number;
+            /**
+             * Max No Progress Iterations
+             * @default 2
+             */
+            max_no_progress_iterations: number;
+            /** Max Total Tokens */
+            max_total_tokens?: number | null;
+            /** Max Total Cost Usd */
+            max_total_cost_usd?: string | null;
+            /** Max Wall Time Seconds */
+            max_wall_time_seconds?: number | null;
+        };
+        /** EngineeringLoopCancelRequest */
+        EngineeringLoopCancelRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /** EngineeringLoopContract */
+        EngineeringLoopContract: {
+            /**
+             * Schema Version
+             * @default engineering-loop-v1
+             * @constant
+             */
+            schema_version: "engineering-loop-v1";
+            /** Loop Id */
+            loop_id: string;
+            /** Request Fingerprint */
+            request_fingerprint: string;
+            /** Title */
+            title: string;
+            /** Objective */
+            objective: string;
+            /** Exit Criteria */
+            exit_criteria: string[];
+            /** Loop Pack */
+            loop_pack: string;
+            worker: components["schemas"]["WorkerProfile"];
+            metric: components["schemas"]["MetricContract"];
+            budget: components["schemas"]["EngineeringLoopBudget"];
+            /** @default auto_disposable */
+            promotion_mode: components["schemas"]["PromotionMode"];
+            /**
+             * Permissions
+             * @default []
+             */
+            permissions: string[];
+            /** Initial State Ref */
+            initial_state_ref: string;
+            /** Input Payload */
+            input_payload?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+        };
+        /**
+         * EngineeringLoopCreateRequest
+         * @description Untrusted public input; Harness compiles the authority-bearing fields.
+         */
+        EngineeringLoopCreateRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Title */
+            title: string;
+            /** Objective */
+            objective: string;
+            /** Exit Criteria */
+            exit_criteria: string[];
+            /** Loop Pack */
+            loop_pack: string;
+            /**
+             * Model Mode
+             * @default scripted
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            model_budget?: components["schemas"]["ModelBudgetConfig"];
+            budget?: components["schemas"]["EngineeringLoopPublicBudget"];
+        };
+        /** EngineeringLoopCreated */
+        EngineeringLoopCreated: {
+            /** Loop Id */
+            loop_id: string;
+            /**
+             * Status
+             * @default running
+             * @constant
+             */
+            status: "running";
+            contract: components["schemas"]["EngineeringLoopContract"];
+        };
+        /** EngineeringLoopDrainResult */
+        EngineeringLoopDrainResult: {
+            /** Loop Id */
+            loop_id: string;
+            /** Steps */
+            steps: number;
+            report: components["schemas"]["EngineeringLoopReport"];
+        };
+        /** EngineeringLoopPauseRequest */
+        EngineeringLoopPauseRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * EngineeringLoopPublicBudget
+         * @description Only parent limits that the v1 runtime actually enforces.
+         */
+        EngineeringLoopPublicBudget: {
+            /**
+             * Max Iterations
+             * @default 3
+             */
+            max_iterations: number;
+            /**
+             * Max No Progress Iterations
+             * @default 2
+             */
+            max_no_progress_iterations: number;
+        };
+        /** EngineeringLoopReport */
+        EngineeringLoopReport: {
+            /** Loop Id */
+            loop_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "pausing" | "paused" | "resuming" | "awaiting_approval" | "completed" | "blocked" | "cancelled";
+            contract: components["schemas"]["EngineeringLoopContract"];
+            /** Active State Ref */
+            active_state_ref: string;
+            /** Active Score */
+            active_score?: string | null;
+            /** Pending State Ref */
+            pending_state_ref?: string | null;
+            /** No Progress Count */
+            no_progress_count: number;
+            /**
+             * Iterations
+             * @default []
+             */
+            iterations: components["schemas"]["EngineeringIterationReport"][];
+            /** Terminal Reason */
+            terminal_reason?: string | null;
+        };
+        /** EngineeringLoopResumeRequest */
+        EngineeringLoopResumeRequest: {
+            /** Request Id */
+            request_id: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * EvalCampaignContract
@@ -1257,6 +1622,34 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** IterationEvaluation */
+        IterationEvaluation: {
+            /** Iteration */
+            iteration: number;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Candidate State Ref */
+            candidate_state_ref: string;
+            /** Evaluator Version */
+            evaluator_version: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: string;
+            };
+            /** Hard Gates */
+            hard_gates: {
+                [key: string]: boolean;
+            };
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Valid */
+            valid: boolean;
+            /**
+             * Invalid Reasons
+             * @default []
+             */
+            invalid_reasons: string[];
+        };
         JsonValue: unknown;
         /** KernelDecision */
         KernelDecision: {
@@ -1308,6 +1701,31 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** LoopDecision */
+        LoopDecision: {
+            kind: components["schemas"]["LoopDecisionKind"];
+            /** Iteration */
+            iteration: number;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Accepted */
+            accepted: boolean;
+            /** Score */
+            score?: string | null;
+            /** Active State Ref */
+            active_state_ref?: string | null;
+            /** Pending State Ref */
+            pending_state_ref?: string | null;
+            /** Next No Progress Count */
+            next_no_progress_count: number;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * LoopDecisionKind
+         * @enum {string}
+         */
+        LoopDecisionKind: "accept_continue" | "reject_continue" | "complete" | "awaiting_approval" | "blocked";
         /**
          * LoopPhase
          * @enum {string}
@@ -1340,6 +1758,21 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** MetricContract */
+        MetricContract: {
+            /** Name */
+            name: string;
+            direction: components["schemas"]["MetricDirection"];
+            /** Target */
+            target: string;
+            /** Evaluator Version */
+            evaluator_version: string;
+        };
+        /**
+         * MetricDirection
+         * @enum {string}
+         */
+        MetricDirection: "maximize" | "minimize";
         /** ModelBudgetConfig */
         ModelBudgetConfig: {
             /**
@@ -1603,6 +2036,11 @@ export interface components {
             /** Depth */
             depth: number;
         };
+        /**
+         * PromotionMode
+         * @enum {string}
+         */
+        PromotionMode: "auto_disposable" | "approval_required" | "candidate_only";
         /** QueuedDeliveryView */
         QueuedDeliveryView: {
             /** Delivery Id */
@@ -1960,6 +2398,25 @@ export interface components {
             updated_at: string;
         } & {
             [key: string]: unknown;
+        };
+        /** WorkerProfile */
+        WorkerProfile: {
+            /**
+             * Execution Mode
+             * @enum {string}
+             */
+            execution_mode: "single" | "team";
+            /**
+             * Model Mode
+             * @enum {string}
+             */
+            model_mode: "scripted" | "deepseek";
+            /** Task Pack */
+            task_pack: string;
+            /** Model Budget */
+            model_budget?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
         };
         /** WorkspaceFileEntry */
         WorkspaceFileEntry: {
@@ -2352,6 +2809,374 @@ export interface operations {
                 };
             };
             /** @description Cancellation conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_engineering_loops_api_engineering_loops_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopReport"][];
+                };
+            };
+        };
+    };
+    create_engineering_loop_api_engineering_loops_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngineeringLoopCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopCreated"];
+                };
+            };
+            /** @description Invalid loop request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Loop conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_engineering_loop_api_engineering_loops__loop_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopReport"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    advance_engineering_loop_api_engineering_loops__loop_id__advance_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopAdvanceResult"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Advance conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    drain_engineering_loop_api_engineering_loops__loop_id__drain_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopDrainResult"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Drain conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pause_engineering_loop_api_engineering_loops__loop_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngineeringLoopPauseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopReport"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Pause conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_engineering_loop_api_engineering_loops__loop_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngineeringLoopResumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopReport"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Resume conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_engineering_loop_api_engineering_loops__loop_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngineeringLoopCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineeringLoopReport"];
+                };
+            };
+            /** @description Loop not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Cancel conflict */
             409: {
                 headers: {
                     [name: string]: unknown;

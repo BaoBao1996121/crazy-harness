@@ -109,6 +109,10 @@ Composite Checkpoint：打开一个 `repo-maintainer` 单 Agent Run，点击顶�
 
 AgentRun 持久控制：打开一个单 Agent Run，点击顶部“运行控制”。安全暂停会先阻止领取下一轮工作，在途 Turn 收尾后进入 Paused；继续运行沿用原邮箱和事件历史；Nudge 只让最新版进入下一轮 Context；Fork 只从已验证 Checkpoint 派生新 Run。刷新页面或重启 Control Plane 后，状态与父子谱系仍可从持久事实重建。
 
+Durable Engineering Loop：点击顶部“工程循环 / Loop”，选择 `repo-quality` 与 Scripted 模型即可启动两轮无 API 费用的质量爬坡。父循环会把目标、Candidate、canonical child AgentRun、独立 Evaluation 和 Decision 持久化；可单步、定向运行到底、暂停/恢复或取消。点击任一 child Run 后，上方保留父循环故事，下方切换到该 AgentRun 的完整模型、工具、Gate 和事件轨迹。Pause 只阻止新的父级推进，已发布的 child 可能继续收尾；当前自动晋升仅限 disposable Workspace。
+
+![Durable Engineering Loop Control Room](docs/assets/engineering-loop-child-drilldown.png)
+
 Tool Search 大目录演示（持久 Mailbox -> Scheduler -> AgentLoop -> 搜索 -> 下一轮 Schema 披露 -> 原生工具调用）：
 
 ```powershell

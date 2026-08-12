@@ -374,3 +374,14 @@
 - **边界**：本轮没有实现 `repo-quality`、真实 child Run、Engineering Loop API/UI，也没有运行后端全量回归；文档中的 `20 passed` 来自此前 EL0/EL1 聚焦实测，EL2 当前仍是预期 RED。
 
 设计审查：5/5 通过。无新增外部依赖；只引用已有实测数字；异常和恢复边界均有说明；性能阈值标为初始值；未将目标架构冒充当前能力。
+
+### 2026-08-12 19:15 Durable Engineering Loop EL3 父级控制室闭环
+
+- **时间**：2026-08-12 19:15:00 +08:00。
+- **动作**：为父 Engineering Loop 增加受限 Public Create Contract、List/Get、单阶段 Advance、Loop-scoped Drain、Pause/Resume/Cancel、按 `loop_id` 过滤的只读 SSE，以及中英双语 Control Room。Pause/Resume 采用“请求先落盘、与父推进共用 Claim、后台重放补齐”的持久控制；公开输入不能自行指定权限、Worker、Metric 或 Initial State。前端同时接入父循环实时状态、Runtime health、Iteration 故事链和 canonical child Run 下钻。
+- **证据**：三个 EL3 Spike 分别证明 SSE scope/read-only、target-only advance 和 child identity drilldown；后端 Engineering Loop 聚焦组累计 `29 passed`。前端全量 `24 files / 91 tests passed`，Production Build 1,612 modules 成功。真实 HTTP Golden `loop_d6639d6336c2` 两轮得到 `0.5 -> 1.0` 并完成；`loop_b419b349354c` 在服务 Kill-Restart 后仍为 `paused`、0 Iteration。点击第一轮 child 后 URL 为 `?loop=loop_d6639d6336c2&run=run_83cdc4699b68`，下方读取 181 条子运行事实和 6 个 Agent 身份。
+- **效果**：Loop Engineering 不再只是后台状态机。用户能从同一页面看到“目标 -> Candidate -> child AgentRun -> 独立评测 -> Decision”的两轮因果链，控制父循环，并下钻核对模型、工具与 Gate 事实；没有选择 child Run 时也不会把在线父循环误标成平台离线。
+- **视觉**：1440x900 与 390x844 无页面横向溢出，Console 0 warning / 0 error。截图为 `docs/assets/engineering-loop-control-desktop.png`、`engineering-loop-paused-desktop.png`、`engineering-loop-control-mobile.png` 和 `engineering-loop-child-drilldown.png`。
+- **边界**：父 Pause 不撤销已经 release 的 child；Cancel 在父 Claim 忙时仍由调用方重试，尚未做到持久取消意图必达。当前 Golden 使用 Scripted Provider 与 disposable Workspace，不证明 DeepSeek 质量、容器隔离、人工晋升或并行候选收益。完整 Release 与 GitHub CI 留给 EL4 收口。
+
+设计审查：5/5 通过。没有新增 Runtime 第三方依赖；测试、Run ID、分数、Event 数和截图均来自本机实测；创建幂等冲突、授权缺口、等待公平性、Pause/Resume 崩溃窗口、终态控制、SSE 纯读和目标隔离均有验证；父 Claim TTL 与控制重试仍是初始工程值；范围保持串行 disposable Loop MVP。
