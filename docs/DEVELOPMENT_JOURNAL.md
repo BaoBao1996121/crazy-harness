@@ -396,3 +396,10 @@
 - **边界**：当前只支持读取一个已知 Engineering Loop；没有 list/create/advance/cancel Tool。本地 tarball 安装合同已验证，但 registry 发布、SBOM/NOTICE、真实模型 Tool Call、Scientific Job、Artifact、A2A Provider、Event mirror、跨主机认证或全链路发布尚未完成。Ubuntu/Node 22.19 与 Windows/Node 24 矩阵仅完成 workflow 配置，当前分支尚未取得 GitHub Actions 证据；PR #26 不包含本轮未提交改动，仍需创建下一层 stacked Draft PR。
 
 设计审查：当前纵切证明 rc.7 的本地 pack、外部 profile 安装、官方 base boot 和 Tool 生命周期，不把它冒充 registry 发布或真实模型调用；原生 lifecycle script 仅允许 `node-pty`、`koffi` 与 `dsh-subprocess-local`，其余默认拒绝并要求升级复审。8 个 DSH 直依赖由动态门禁统一精确 pin；运行时直接依赖已由 lockfile 与许可证矩阵追踪，SBOM/NOTICE 是 registry 发布前门禁，当前尚未伪造空产物。
+
+### 2026-08-18 12:50 DSH stacked Draft PR #28
+
+- **时间**：2026-08-18 12:50:18 +08:00。
+- **结果**：提交 `c95cab0e8d495056daa785f1fd8f2badee4d8e66` 已推送到 `origin/feat/scientific-kernel-v12`，并创建 [Draft PR #28](https://github.com/BaoBao1996121/crazy-harness/pull/28)，base/head 为 `feat/engineering-loop-control-v11 -> feat/scientific-kernel-v12`。当前集成意图仍是随 stacked PR 队列进入父分支，不直接改写 #26。
+- **远端证据**：PR 创建后 Ubuntu/Python 3.11、Windows/Python 3.13、Frontend、Ubuntu/Node 22.19 DSH 与 Windows/Node 24 DSH 五项检查均已启动；此时尚在运行，不能声明跨平台通过。最终状态须以 #28 当前 HEAD 的 GitHub Actions 为准。
+- **剩余风险**：Actions 仍使用可变 major tag，后续供应链加固应统一 SHA pin 并设置 `persist-credentials: false`；本次 push 同时报告默认分支有 1 个 high、1 个 moderate Dependabot 告警，尚未归因到本纵切，需独立只读分诊后再决定修复范围。
