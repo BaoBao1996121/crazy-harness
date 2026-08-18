@@ -59,6 +59,11 @@ groups. Their deadlines terminate the complete child tree on both Windows and
 POSIX, so a lifecycle regression cannot outlive the contract or consume the
 whole CI job timeout.
 
+The packed profile keeps the install offline and passes the workspace's effective
+pnpm store through `PNPM_CONFIG_STORE_DIR` while using a cold `PNPM_HOME`. This is
+intentional: a temporary profile on another Windows drive must not select an empty
+store or fall back to an undeclared machine cache.
+
 To rerun only the exact-pin and packed-profile contracts without reading or
 modifying a personal DSH profile:
 
@@ -109,5 +114,7 @@ The main integration job and scheduled `dsh-next-probe` are configured for
 Ubuntu/Node 22.19 and Windows/Node 24. The probe applies the npm `next` version
 only to an ephemeral checkout and runs the same contracts for early warning. It
 does not restore or save the production pin's pnpm cache, and never updates the
-committed production pin automatically. The current matrix still requires
-GitHub Actions evidence for this branch.
+committed production pin automatically. The rc.7 matrix is verified by GitHub
+Actions run `32102216325` (both DSH jobs, both backend jobs, and frontend passed).
+This is production-pin evidence only; `next` has not yet been proven against a
+different upstream release.

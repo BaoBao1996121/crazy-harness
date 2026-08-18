@@ -97,6 +97,10 @@ Bundle 本身是 patch-only，不提供 runtime main。Provider 提供
 `ctx.crazyControlPlane`，Tool 通过 Cordis injection 等待 `tools` 与该服务；二者
 不通过 Bundle 聚合代码形成隐藏耦合。
 
+测试 profile 仍保持 `--offline` 合同，并显式把 workspace 的 effective pnpm
+store 通过 `PNPM_CONFIG_STORE_DIR` 传给官方 CLI；每次测试使用冷 `PNPM_HOME`，所以
+临时 profile 跨盘时不会悄悄切到空 store 或依赖开发机缓存。
+
 ## 版本与更新红利
 
 生产基线精确锁定 `@deepseek-ai/dsh@0.1.0-rc.7` 和
@@ -125,8 +129,10 @@ Bundle 本身是 patch-only，不提供 runtime main。Provider 提供
 Windows/Node 24。`dsh-next-probe` 在相同矩阵中，仅于 schedule 或手动触发时把
 npm `next` 应用到临时 checkout 并执行相同门禁；它不是依赖自动晋升，也不会
 覆盖提交中的精确 pin。探针不读写按提交中 rc.7 lockfile 建立的 pnpm cache，
-避免未审查的 `next` 依赖闭包污染主 CI。当前矩阵配置尚待本分支 GitHub Actions
-实跑，不能用本机 Node 24 结果替代跨平台证据。
+避免未审查的 `next` 依赖闭包污染主 CI。run `32102216325` 已在本分支实跑并
+通过 Ubuntu/Node 22.19、Windows/Node 24 DSH 以及 Ubuntu/Windows Python backend
+和 frontend 五项门禁；这证明的是 rc.7 生产 pin 的跨平台合同，不等同于不同
+`next` 版本已经兼容。
 
 ## 后续路线
 
@@ -151,6 +157,10 @@ npm `next` 应用到临时 checkout 并执行相同门禁；它不是依赖自�
 - Python façade：聚焦 Pytest 为 `1 passed, 7 deselected`，相关 Ruff 通过。
 - TypeScript build 未启用 `skipLibCheck`；同步后的前端 production build 此前已在
   同一 OpenAPI 语义下通过，本轮未因测试夹具和门禁修改重复运行。
+- 远端 run `32102216325` 五项 job 全部成功；首次 run `32100717131` 的 Windows DSH
+  `ERR_PNPM_NO_OFFLINE_TARBALL` 已由 `45f3e57` 的显式
+  `PNPM_CONFIG_STORE_DIR`/冷 `PNPM_HOME` 合同修复。该修复只在 Crazy 测试边界内，
+  未修改 DSH 上游。
 
 本地 tarball 安装合同已经验证，但 registry 发布、SBOM/NOTICE、真实模型调用、
 远程认证、Scientific Job、A2A Provider 与 Event mirror 仍未完成，不能从当前

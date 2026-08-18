@@ -403,3 +403,13 @@
 - **结果**：提交 `c95cab0e8d495056daa785f1fd8f2badee4d8e66` 已推送到 `origin/feat/scientific-kernel-v12`，并创建 [Draft PR #28](https://github.com/BaoBao1996121/crazy-harness/pull/28)，base/head 为 `feat/engineering-loop-control-v11 -> feat/scientific-kernel-v12`。当前集成意图仍是随 stacked PR 队列进入父分支，不直接改写 #26。
 - **远端证据**：PR 创建后 Ubuntu/Python 3.11、Windows/Python 3.13、Frontend、Ubuntu/Node 22.19 DSH 与 Windows/Node 24 DSH 五项检查均已启动；此时尚在运行，不能声明跨平台通过。最终状态须以 #28 当前 HEAD 的 GitHub Actions 为准。
 - **剩余风险**：Actions 仍使用可变 major tag，后续供应链加固应统一 SHA pin 并设置 `persist-credentials: false`；本次 push 同时报告默认分支有 1 个 high、1 个 moderate Dependabot 告警，尚未归因到本纵切，需独立只读分诊后再决定修复范围。
+
+### 2026-08-18 13:35 DSH Windows 离线 profile 合同修复与跨平台收口
+
+- **动作**：针对首次 run `32100717131` 的 Windows DSH 失败，修复 packed-profile 测试的跨盘 pnpm store 选择。测试先用当前 pnpm 解析 workspace 的 effective store，清除大小写变体的继承配置，向官方 CLI 显式传递 `PNPM_CONFIG_STORE_DIR`，并为每次临时 profile 使用冷 `PNPM_HOME`；profile add 单独使用 20 秒截止。没有放宽 `--offline`，没有修改 DSH 上游。
+- **根因**：workspace 安装使用 `D:\.pnpm-store\v11`，临时 `DSH_HOME` 位于 `C:`；官方 CLI 在 profile cwd 内重新调用 pnpm 后选中了另一个空 store，离线安装因此缺少 `@deepseek-ai/schemastery@3.18.1`。
+- **证据**：修复提交 `45f3e57c91c0231df5048d13f96715d6147328ca` 已推送。GitHub Actions run `32102216325` 全部成功：DSH Ubuntu/Node 22.19 job `95604805228`、DSH Windows/Node 24 job `95604805330`、Ubuntu backend job `95604805229`、Windows backend job `95604805308`、frontend job `95604805311`。真实 Windows DSH 合同通过且无 `ERR_PNPM_NO_OFFLINE_TARBALL`。
+- **效果**：生产 rc.7 的拆件组合、官方唯一 `agent-loop`、Windows/POSIX 生命周期清理和 Python/Frontend 邻接门禁均有跨平台 CI 证据；Crazy 仍是树外 sidecar，DSH 仍拥有 loop/session/tool UX。
+- **边界**：`dsh-next` 仍只是 schedule/manual 的隔离兼容性探针，尚未用不同上游版本证明真实升级；registry 发布、SBOM/NOTICE、真实模型 Tool Call、Scientific Job、Artifact、A2A/Event mirror、跨主机认证和全链路发布继续留待后续。Actions 可变 major tag 及默认分支 1 high/1 moderate Dependabot 告警仍需独立处理。
+
+设计审查：5/5 通过。修复只改变 Crazy 集成合同的环境传递和测试截止，不改变 DSH 运行时或生产协议；冷 store 回归、真实 Windows runner、完整 DSH 合同与五项邻接门禁均已验证。
