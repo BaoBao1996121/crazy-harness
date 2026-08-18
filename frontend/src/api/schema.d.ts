@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/api/integrations/dsh/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Capabilities */
+        get: operations["capabilities_api_integrations_dsh_v1_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/integrations/dsh/v1/engineering-loops/{loop_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Engineering Loop */
+        get: operations["get_engineering_loop_api_integrations_dsh_v1_engineering_loops__loop_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -1176,6 +1210,61 @@ export interface components {
             memory_candidate_id?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * DshEngineeringLoopView
+         * @description Stable DSH projection that does not expose internal loop authority fields.
+         */
+        DshEngineeringLoopView: {
+            /** Loop Id */
+            loop_id: string;
+            /** Title */
+            title: string;
+            /** Objective */
+            objective: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "pausing" | "paused" | "resuming" | "awaiting_approval" | "completed" | "blocked" | "cancelled";
+            /** Active Score */
+            active_score?: string | null;
+            /** Iteration Count */
+            iteration_count: number;
+            /**
+             * Child Run Ids
+             * @default []
+             */
+            child_run_ids: string[];
+            /** Terminal Reason */
+            terminal_reason?: string | null;
+        };
+        /**
+         * DshIntegrationCapabilities
+         * @description Version handshake for out-of-tree DeepSeek Harness plugins.
+         */
+        DshIntegrationCapabilities: {
+            /**
+             * Protocol Version
+             * @default crazy-dsh-v1
+             * @constant
+             */
+            protocol_version: "crazy-dsh-v1";
+            /** Control Plane Version */
+            control_plane_version: string;
+            /**
+             * Transport
+             * @default http-json
+             * @constant
+             */
+            transport: "http-json";
+            /**
+             * Capabilities
+             * @default [
+             *       "engineering_loop.read"
+             *     ]
+             */
+            capabilities: string[];
         };
         /** EngineeringIterationIdentity */
         EngineeringIterationIdentity: {
@@ -2460,6 +2549,57 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    capabilities_api_integrations_dsh_v1_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DshIntegrationCapabilities"];
+                };
+            };
+        };
+    };
+    get_engineering_loop_api_integrations_dsh_v1_engineering_loops__loop_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                loop_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DshEngineeringLoopView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_health_get: {
         parameters: {
             query?: never;

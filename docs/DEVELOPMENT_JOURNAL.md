@@ -385,3 +385,14 @@
 - **边界**：父 Pause 不撤销已经 release 的 child；Cancel 在父 Claim 忙时仍由调用方重试，尚未做到持久取消意图必达。当前 Golden 使用 Scripted Provider 与 disposable Workspace，不证明 DeepSeek 质量、容器隔离、人工晋升或并行候选收益。完整 Release 与 GitHub CI 留给 EL4 收口。
 
 设计审查：5/5 通过。没有新增 Runtime 第三方依赖；测试、Run ID、分数、Event 数和截图均来自本机实测；创建幂等冲突、授权缺口、等待公平性、Pause/Resume 崩溃窗口、终态控制、SSE 纯读和目标隔离均有验证；父 Claim TTL 与控制重试仍是初始工程值；范围保持串行 disposable Loop MVP。
+
+### 2026-08-18 11:10 DeepSeek Harness rc.7 树外组合纵切
+
+- **时间**：2026-08-18 11:10:00 +08:00。
+- **动作**：将北极星调整为官方 DSH 拥有唯一交互式 Agent Loop、Session、Tool UX 与插件生命周期，Crazy 作为业务 sidecar。精确锁定官方 `dsh-v0.1.0-rc.7` / `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`，新增 versioned 只读 Python façade、三个独立 Cordis 部件和 patch-only Bundle；不切换或修改本地 DSH 工作树。
+- **集成身份**：当前派生分支为 `feat/scientific-kernel-v12`，不可变 `base_sha=76da586abb580e37b5a4d778528ea8d736bd6af5`，`source_ref=refs/heads/feat/engineering-loop-control-v11`，`integration_target=refs/heads/feat/engineering-loop-control-v11`；意图是在当前纵切验证后创建下一层 stacked Draft PR，不直接改写父分支。
+- **证据**：路径链接版能生成配置却在官方 Loader boot 时无法从外部 profile 解析两个 Crazy runtime package；四个 tarball 同次安装也因未发布的精确依赖访问 registry 而 RED。改为 pack 四个拆件、在临时 profile 用 exact-version file override 代替 registry、只安装 Bundle 后，官方 base profile 完整 boot 转绿。本机 Node 24.19 的 frozen install、8 个 DSH pin 检查、TypeScript build 与 `5 files / 14 tests passed`；新增父子 Node 进程树探针证明超时会终止完整子树。Python façade 为 `1 passed, 7 deselected`，相关 Ruff 与 diff check 通过。同步后的前端 OpenAPI 类型与 production build（1,612 modules）此前已在同一 API 语义下通过。
+- **效果**：Crazy 第一次以可独立升级的树外部件接入 DSH，而不是复制或 fork 上游主循环。Provider 只接受 loopback HTTP、禁止 redirect、严格校验 wire DTO、保留结构化错误，并按 rc.7 官方模式将响应限制为 16 KiB streamed bytes；握手只缓存成功值，并发调用不会共享首个调用者的取消结果。Pack、CLI 与完整 boot 均在可整树终止的独立进程组内，CLI 截止 10 秒、boot 截止 20 秒。主 CI 新增 frozen-lockfile DSH job，schedule/manual `dsh-next-probe` 通过环境变量传递已校验版本、且不共享生产 pin 的 pnpm cache，可提前发现 npm `next` 破坏性变化而不自动晋升生产 pin。
+- **边界**：当前只支持读取一个已知 Engineering Loop；没有 list/create/advance/cancel Tool。本地 tarball 安装合同已验证，但 registry 发布、SBOM/NOTICE、真实模型 Tool Call、Scientific Job、Artifact、A2A Provider、Event mirror、跨主机认证或全链路发布尚未完成。Ubuntu/Node 22.19 与 Windows/Node 24 矩阵仅完成 workflow 配置，当前分支尚未取得 GitHub Actions 证据；PR #26 不包含本轮未提交改动，仍需创建下一层 stacked Draft PR。
+
+设计审查：当前纵切证明 rc.7 的本地 pack、外部 profile 安装、官方 base boot 和 Tool 生命周期，不把它冒充 registry 发布或真实模型调用；原生 lifecycle script 仅允许 `node-pty`、`koffi` 与 `dsh-subprocess-local`，其余默认拒绝并要求升级复审。8 个 DSH 直依赖由动态门禁统一精确 pin；运行时直接依赖已由 lockfile 与许可证矩阵追踪，SBOM/NOTICE 是 registry 发布前门禁，当前尚未伪造空产物。

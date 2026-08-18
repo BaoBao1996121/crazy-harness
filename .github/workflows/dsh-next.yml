@@ -1,0 +1,49 @@
+name: dsh-next-probe
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: DSH next (${{ matrix.os }}, Node ${{ matrix.node }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: "22.19.0"
+          - os: windows-latest
+            node: "24"
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: integrations/deepseek-harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          # The probe rewrites the DSH graph after setup; sharing the committed
+          # rc.7 lockfile key would let an unreviewed next store pollute main CI.
+      - name: Resolve DSH next version
+        id: dsh
+        shell: bash
+        run: echo "version=$(pnpm view @deepseek-ai/dsh dist-tags.next)" >> "$GITHUB_OUTPUT"
+      - name: Apply exact probe pin
+        shell: bash
+        env:
+          DSH_PROBE_VERSION: ${{ steps.dsh.outputs.version }}
+        run: pnpm dsh:pin "$DSH_PROBE_VERSION"
+      - name: Install probe dependency graph
+        run: pnpm install --no-frozen-lockfile
+      - name: Typecheck, build, and run compatibility contracts
+        run: pnpm test

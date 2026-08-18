@@ -19,6 +19,9 @@ from crazy_harness.control_plane.eval_campaigns import (
     EvalCampaignReport,
     EvalCampaignRequest,
 )
+from crazy_harness.control_plane.dsh_integration import (
+    create_dsh_integration_router,
+)
 from crazy_harness.control_plane.engineering_loops import (
     EngineeringLoopAdvanceResult,
     EngineeringLoopCancelRequest,
@@ -156,6 +159,12 @@ def create_app(data_dir: Path, *, background: bool = True) -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    app.include_router(
+        create_dsh_integration_router(
+            runtime,
+            control_plane_version=CONTROL_PLANE_VERSION,
+        )
     )
 
     @app.get("/api/health", response_model=HealthView)

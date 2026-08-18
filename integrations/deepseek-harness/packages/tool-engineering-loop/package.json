@@ -1,0 +1,29 @@
+{
+  "name": "@crazy-harness/dsh-tool-engineering-loop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts"
+  ],
+  "peerDependencies": {
+    "@crazy-harness/dsh-control-plane": "^0.1.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7"
+  },
+  "devDependencies": {
+    "@crazy-harness/dsh-control-plane": "workspace:*",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7"
+  }
+}
