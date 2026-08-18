@@ -1,0 +1,5 @@
+- insert:
+    - id: crazy-control-plane-http
+      name: '@crazy-harness/dsh-control-plane-http'
+    - id: crazy-tool-engineering-loop
+      name: '@crazy-harness/dsh-tool-engineering-loop'

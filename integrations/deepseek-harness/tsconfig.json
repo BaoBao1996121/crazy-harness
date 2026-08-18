@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/control-plane" },
+    { "path": "packages/control-plane-http" },
+    { "path": "packages/tool-engineering-loop" }
+  ]
+}

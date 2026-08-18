@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "declaration": true,
+    "composite": true,
+    "skipLibCheck": false,
+    "paths": {
+      "@crazy-harness/dsh-control-plane": ["./packages/control-plane/src/index.ts"],
+      "@crazy-harness/dsh-control-plane-http": ["./packages/control-plane-http/src/index.ts"],
+      "@crazy-harness/dsh-tool-engineering-loop": ["./packages/tool-engineering-loop/src/index.ts"]
+    }
+  }
+}

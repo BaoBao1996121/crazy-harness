@@ -5,6 +5,69 @@
     "version": "0.10.0-dev"
   },
   "paths": {
+    "/api/integrations/dsh/v1/capabilities": {
+      "get": {
+        "tags": [
+          "dsh-integration"
+        ],
+        "summary": "Capabilities",
+        "operationId": "capabilities_api_integrations_dsh_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DshIntegrationCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integrations/dsh/v1/engineering-loops/{loop_id}": {
+      "get": {
+        "tags": [
+          "dsh-integration"
+        ],
+        "summary": "Get Engineering Loop",
+        "operationId": "get_engineering_loop_api_integrations_dsh_v1_engineering_loops__loop_id__get",
+        "parameters": [
+          {
+            "name": "loop_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Loop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DshEngineeringLoopView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "summary": "Health",
@@ -3295,6 +3358,118 @@
           "status"
         ],
         "title": "DreamJobView"
+      },
+      "DshEngineeringLoopView": {
+        "properties": {
+          "loop_id": {
+            "type": "string",
+            "title": "Loop Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "objective": {
+            "type": "string",
+            "title": "Objective"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "pausing",
+              "paused",
+              "resuming",
+              "awaiting_approval",
+              "completed",
+              "blocked",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "active_score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Score"
+          },
+          "iteration_count": {
+            "type": "integer",
+            "title": "Iteration Count"
+          },
+          "child_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Child Run Ids",
+            "default": []
+          },
+          "terminal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "loop_id",
+          "title",
+          "objective",
+          "status",
+          "iteration_count"
+        ],
+        "title": "DshEngineeringLoopView",
+        "description": "Stable DSH projection that does not expose internal loop authority fields."
+      },
+      "DshIntegrationCapabilities": {
+        "properties": {
+          "protocol_version": {
+            "type": "string",
+            "const": "crazy-dsh-v1",
+            "title": "Protocol Version",
+            "default": "crazy-dsh-v1"
+          },
+          "control_plane_version": {
+            "type": "string",
+            "title": "Control Plane Version"
+          },
+          "transport": {
+            "type": "string",
+            "const": "http-json",
+            "title": "Transport",
+            "default": "http-json"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capabilities",
+            "default": [
+              "engineering_loop.read"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "control_plane_version"
+        ],
+        "title": "DshIntegrationCapabilities",
+        "description": "Version handshake for out-of-tree DeepSeek Harness plugins."
       },
       "EngineeringIterationIdentity": {
         "properties": {

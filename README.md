@@ -4,11 +4,23 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
 
-**A from-scratch, event-driven, resident Agent Team runtime built to make every model decision, tool effect, recovery boundary, and context mutation inspectable.**
+**Evolving toward a DeepSeek Harness-native control plane for traceable engineering and scientific loops.**
 
-Crazy 是一个不依赖现有 Agent 框架接管主循环、手工实现的事件驱动 Harness。CI/CD disposable dev 只是可替换的业务落点，核心是 Agent Loop、Context、工具副作用、崩溃恢复和常驻 A2A Teamwork。
+Crazy 正在迁移为官方 DeepSeek Harness（DSH）的可组合业务控制面：目标架构由 DSH 拥有唯一交互式 Agent Loop、Session、Tool UX 与插件生命周期，Crazy 通过树外 Cordis Bundle 和 versioned HTTP sidecar 逐步接入业务部件。当前 DSH 纵切只开放只读 Engineering Loop；Event、A2A、Eval、Artifact、Approval 与 Scientific Job/Portfolio 是既有 Crazy 能力或后续接入路线，不应误读为已经完成的 DSH 插件。既有自研 Runtime 继续作为可验证的业务能力与学习基线，但不再扩建为第二套通用主 Harness。
 
 ![Crazy Control Room：常驻 Agent、事件时间线、Context 与 Agent Skills](docs/assets/control-room.png)
+
+## DeepSeek Harness 接入状态
+
+当前 tracer bullet 精确锁定官方 `@deepseek-ai/dsh@0.1.0-rc.7`：
+
+- 独立 Service Definition、loopback HTTP Provider、只读 Engineering Loop Tool；
+- patch-only Cordis Bundle，不 vendor、不 submodule、不修改 DSH `agent-loop`；
+- `crazy-dsh-v1` 握手与收窄 DTO，DSH 不读取 Crazy SQLite 或内部权限对象；
+- pack 后官方 profile boot 证明 rc.7 的 `agent-loop` 保持唯一，Crazy 只追加两个插件；
+- frozen lockfile + 动态 exact-pin 门禁 + 独立 CI job，升级通过契约测试后才更新精确 pin。
+
+实现与升级手册见 [`integrations/deepseek-harness/README.md`](integrations/deepseek-harness/README.md)，所有权和后续 Scientific sidecar 路线见 [`docs/DEEPSEEK_HARNESS_INTEGRATION_DESIGN.md`](docs/DEEPSEEK_HARNESS_INTEGRATION_DESIGN.md)。
 
 ## 当前可运行能力
 
@@ -144,22 +156,23 @@ python -m pytest -q -m llm tests\e2e\test_resident_repo_maintainer_llm.py tests\
 
 ## 学习入口
 
-1. [`docs/CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md`](docs/CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md)：当前 As-Built 总体架构、五种 Loop、持久事实、Single/Team、质量治理与源码学习顺序。
-2. [`docs/README.md`](docs/README.md)：公开文档地图与建议阅读顺序。
-3. [`docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md`](docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md)：通用 Agent Team 北极星、组件地图与实施路线。
-4. [`docs/DURABLE_SUPERVISOR_WALKTHROUGH.md`](docs/DURABLE_SUPERVISOR_WALKTHROUGH.md)：动态编排、PlanPatch 信任边界、Lease 与故障转移。
-5. [`docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md`](docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md)：Team 在线模型路由、持久预算、重试隔离、Unknown 与成本核销。
-6. [`docs/SINGLE_VS_TEAM_EVAL_DESIGN.md`](docs/SINGLE_VS_TEAM_EVAL_DESIGN.md)：公平配对契约、独立 Scorer、Trace 指标与保守推荐策略。
-7. [`docs/COMPOSITE_CHECKPOINT_DESIGN.md`](docs/COMPOSITE_CHECKPOINT_DESIGN.md)：Workspace、状态引用、Artifact 与 Effect 如何组成可校验检查点，以及 Fork Restore 如何跨崩溃收敛。
-8. [`docs/DURABLE_ENGINEERING_LOOP_DESIGN.md`](docs/DURABLE_ENGINEERING_LOOP_DESIGN.md)：外层 Candidate、child Run、独立 Evaluation 与版本晋升父状态机。
-9. [`docs/ARCHITECTURE_WALKTHROUGH.md`](docs/ARCHITECTURE_WALKTHROUGH.md)：Team Worker 专项静态架构与运行路径，后半部分含明确标注的历史设计快照。
-10. [`docs/HARNESS_CORE_ESSENTIALS.md`](docs/HARNESS_CORE_ESSENTIALS.md)：Agent Loop、Context、Memory、A2A 与 Eval 核心机制。
-11. [`docs/EVIDENCE_RESEARCH_TASKPACK.md`](docs/EVIDENCE_RESEARCH_TASKPACK.md)：第二个 Golden Task 如何复用同一 Runtime，并用浏览器证据和引用门禁准出。
-12. [`docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md`](docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md)：Skill 三层披露、Scope/信任边界与真实 Trace。
-13. [`docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md`](docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md)：MCP 延迟发现、Tool Search 与执行边界。
-14. [`docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md`](docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md)：课程版真实代码、测试与 Trace 手册。
-15. [`docs/ANEW_SCIENTIFIC_HARNESS_GAP_ROADMAP.md`](docs/ANEW_SCIENTIFIC_HARNESS_GAP_ROADMAP.md)：当前通用 Harness 与 Anew 类科研平台的差距、目标架构和首条科学纵切。
-15. [`labs/16h_sprint/README.md`](labs/16h_sprint/README.md)：八个学习块、known-good、Bug Card 与伪代码模板。
+1. [`docs/DEEPSEEK_HARNESS_INTEGRATION_DESIGN.md`](docs/DEEPSEEK_HARNESS_INTEGRATION_DESIGN.md)：DSH 主 Harness、Crazy sidecar 的所有权、组合合同和升级协议。
+2. [`docs/CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md`](docs/CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md)：当前 As-Built 总体架构、五种 Loop、持久事实、Single/Team、质量治理与源码学习顺序。
+3. [`docs/README.md`](docs/README.md)：公开文档地图与建议阅读顺序。
+4. [`docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md`](docs/GENERAL_AGENT_TEAM_MASTER_PLAN.md)：通用 Agent Team 北极星、组件地图与实施路线。
+5. [`docs/DURABLE_SUPERVISOR_WALKTHROUGH.md`](docs/DURABLE_SUPERVISOR_WALKTHROUGH.md)：动态编排、PlanPatch 信任边界、Lease 与故障转移。
+6. [`docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md`](docs/ONLINE_TEAM_MODEL_GOVERNANCE_WALKTHROUGH.md)：Team 在线模型路由、持久预算、重试隔离、Unknown 与成本核销。
+7. [`docs/SINGLE_VS_TEAM_EVAL_DESIGN.md`](docs/SINGLE_VS_TEAM_EVAL_DESIGN.md)：公平配对契约、独立 Scorer、Trace 指标与保守推荐策略。
+8. [`docs/COMPOSITE_CHECKPOINT_DESIGN.md`](docs/COMPOSITE_CHECKPOINT_DESIGN.md)：Workspace、状态引用、Artifact 与 Effect 如何组成可校验检查点，以及 Fork Restore 如何跨崩溃收敛。
+9. [`docs/DURABLE_ENGINEERING_LOOP_DESIGN.md`](docs/DURABLE_ENGINEERING_LOOP_DESIGN.md)：外层 Candidate、child Run、独立 Evaluation 与版本晋升父状态机。
+10. [`docs/ARCHITECTURE_WALKTHROUGH.md`](docs/ARCHITECTURE_WALKTHROUGH.md)：Team Worker 专项静态架构与运行路径，后半部分含明确标注的历史设计快照。
+11. [`docs/HARNESS_CORE_ESSENTIALS.md`](docs/HARNESS_CORE_ESSENTIALS.md)：Agent Loop、Context、Memory、A2A 与 Eval 核心机制。
+12. [`docs/EVIDENCE_RESEARCH_TASKPACK.md`](docs/EVIDENCE_RESEARCH_TASKPACK.md)：第二个 Golden Task 如何复用同一 Runtime，并用浏览器证据和引用门禁准出。
+13. [`docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md`](docs/AGENT_SKILLS_PROGRESSIVE_DISCLOSURE_WALKTHROUGH.md)：Skill 三层披露、Scope/信任边界与真实 Trace。
+14. [`docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md`](docs/MCP_DELAYED_DISCOVERY_WALKTHROUGH.md)：MCP 延迟发现、Tool Search 与执行边界。
+15. [`docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md`](docs/HARNESS_16H_ACTUAL_CODE_LEARNING_GUIDE.md)：课程版真实代码、测试与 Trace 手册。
+16. [`docs/ANEW_SCIENTIFIC_HARNESS_GAP_ROADMAP.md`](docs/ANEW_SCIENTIFIC_HARNESS_GAP_ROADMAP.md)：当前通用 Harness 与 Anew 类科研平台的差距、目标架构和首条科学纵切。
+17. [`labs/16h_sprint/README.md`](labs/16h_sprint/README.md)：八个学习块、known-good、Bug Card 与伪代码模板。
 
 回来后的第一条学习命令：
 
@@ -180,7 +193,8 @@ python labs\16h_sprint\block_01_agent_loop\run_demo.py
 - Skill 当前完成可信文件源、Scope 覆盖、按需正文激活和持久恢复；千级目录检索、资源正文按需读取、文件监听热更新、真实 DeepSeek 触发质量与受控 Skill Evolution 尚未完成。
 - Team v0.7 已把 DeepSeek 路由和持久模型治理接入 Assignment/Peer child AgentRun；v0.8 已完成同题、同完整任务 Hash、同每臂总预算的本地配对、Prepare/Commit/Create fencing 恢复、独立 Scorer、持久报告与双语 UI。Live Pair 才要求同完整推理配置与逐调用证明；Scripted Pair 是不同角色脚本的机制对照，不冒充同模型。缺失调用证明的终态 Pair 会持久化为证据无效报告，而不是停留在 `running`。本机没有 `DEEPSEEK_API_KEY`，真实 DeepSeek 多 Trial、方差/置信度、跨 Pair 统计推荐尚未完成。跨 Scheduler 共享 Global Slot、Remote A2A Adapter 和分布式公平性也仍未完成。第三方模型 API 无法提供端到端 exactly-once；ReadTimeout 等不确定窗口进入 `unknown` 并悲观保留额度。外部工具副作用仍需 OperationLedger、业务幂等键或对账，Fencing 不能撤回已经发出的请求。
 - Composite Checkpoint v0.9 仅支持本地 `repo-maintainer` 单 Agent disposable workspace。它能恢复 Harness 控制的文件和可信引用，不能自动撤销付款、发信、生产发布或其他外部 Effect；不可逆、需对账和 Unknown Effect 默认阻止自动 Restore。Team 多工作区、Git/容器快照、补偿 Adapter、自动逐 Turn 保留与对象 GC 尚未实现。
-- Durable Engineering Loop v0.10 当前是两轮 Scripted Golden：真实走 AgentLoop、工具、Gate、快照、独立 Evaluator 和父级晋升，但不证明 DeepSeek 的开放任务质量。单 Agent 控制 API/UI 已完成；父级 Engineering Loop 的 HTTP/SSE/UI、Team/Remote Run 控制仍待实现。Pause 只建立下一 Turn 的写屏障，不能中断正在进行的模型/工具调用，也不能撤销已经发生的外部副作用。
+- Durable Engineering Loop v0.10 当前是两轮 Scripted Golden：真实走 AgentLoop、工具、Gate、快照、独立 Evaluator 和父级晋升，但不证明 DeepSeek 的开放任务质量。单 Agent 与父级 Engineering Loop 的控制 API/UI 已完成；Team/Remote Run 控制仍待实现。Pause 只建立下一 Turn 的写屏障，不能中断正在进行的模型/工具调用，也不能撤销已经发生的外部副作用。
+- DSH 接入当前只完成 loopback、只读 Engineering Loop tracer bullet 与本地 packed-profile 组合门禁；尚未完成 Bundle registry 发布、SBOM/NOTICE、真实模型 Tool Call、Scientific Job、Artifact、A2A Provider、Event mirror 或远程认证。
 
 ## 参与项目
 

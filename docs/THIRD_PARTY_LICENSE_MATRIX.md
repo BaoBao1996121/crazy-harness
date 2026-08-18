@@ -1,9 +1,13 @@
 # Third-Party License Matrix
 
-> 更新日期：2026-07-17。状态为“待锁定”的组件不能进入默认安装依赖，必须在集成 PR 中固定版本、许可证和来源 Commit。
+> 更新日期：2026-08-18。状态为“待锁定”的组件不能进入默认安装依赖，必须在集成 PR 中固定版本、许可证和来源 Commit。
 
 | 项目 | 计划用途 | 集成级别 | 已知许可证 | 当前状态 |
 |---|---|---|---|---|
+| DeepSeek Harness | 唯一主 Harness、Session、Tool UX 与插件生命周期 | Exact-pinned host dependency | MIT | 已锁定 `dsh-v0.1.0-rc.7` / `99f6f02fecdb`；树外 Bundle，不复制或修改上游源码 |
+| DeepSeek Cordis | 树外插件 Service Definition 与生命周期装配 | Exact-pinned integration dependency | MIT | 已锁定 `4.0.1`；Crazy Bundle 只追加自有插件 |
+| DeepSeek Schemastery | Cordis 插件配置 Schema | Exact-pinned integration dependency | MIT | 已锁定 `3.18.1`；仅用于 HTTP Provider 配置校验 |
+| Zod | DSH/Crazy wire DTO 严格校验 | Exact-pinned integration dependency | MIT | 已锁定 `4.1.11`；协议漂移默认失败关闭 |
 | OpenClaw | Gateway、隔离、安全模式参考 | Pattern | MIT | 已研究，不复制源码 |
 | Hermes Agent | Completion Contract、Learning Lane、PTC 参考 | Pattern | MIT | 已锁定过源码快照 |
 | OpenHands SDK | 类型 Event、Workspace 契约参考 | Pattern/optional adapter | MIT | 版本待集成时锁定 |
@@ -27,7 +31,7 @@
 
 ## 合规规则
 
-1. 所有直接依赖必须在 lockfile、SBOM 和 NOTICE 中可追踪。
+1. 进入默认安装或发布产物的第三方运行时直接依赖必须在 lockfile 和本矩阵中可追踪；正式发布 registry/tarball 前，必须从锁文件生成 SBOM 与 NOTICE，并将二者纳入发布门禁。
 2. Pattern 借鉴只写行为规格与自主实现，不复制 Prompt、测试表达或内部 Schema。
 3. AGPL 代码不得复制或链接进 Apache-2.0 核心；需要时只能作为独立外部服务并单独评审。
 4. Adapter PR 必须附官方仓库、版本/Commit、许可证文件 Hash 和最小权限说明。

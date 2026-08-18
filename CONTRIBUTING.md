@@ -34,7 +34,7 @@ Live DeepSeek tests require both `DEEPSEEK_API_KEY` and `CRAZY_RUN_LLM_TESTS=1`.
 
 ## Contribution rules
 
-1. Keep the main Agent Loop under Crazy's control; integrate third-party systems through ports and adapters.
+1. Keep the official DSH Agent Loop as the only interactive main loop. Crazy domain loops integrate through versioned ports and adapters; do not introduce a second generic Harness loop.
 2. Treat model output as a candidate. Side effects require validation, policy, hooks, budgets, and the operation ledger.
 3. EventLog, Mailbox, Ledger, and Artifact records are recovery facts; in-memory objects are not.
 4. New mechanisms need an off baseline, replayable evidence, failure-path tests, and honest limits.

@@ -27,6 +27,11 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 npm-debug.log*
 
+# Out-of-tree DeepSeek Harness integration build products
+integrations/deepseek-harness/**/node_modules/
+integrations/deepseek-harness/**/lib/
+integrations/deepseek-harness/**/*.tsbuildinfo
+
 # Runtime state and generated evidence
 runs/
 output/
@@ -66,6 +71,7 @@ docs/*
 !docs/ARCHITECTURE_WALKTHROUGH.md
 !docs/CURRENT_PLATFORM_ARCHITECTURE_LEARNING_GUIDE.md
 !docs/CONTROLLED_CONCURRENCY_WALKTHROUGH.md
+!docs/DEEPSEEK_HARNESS_INTEGRATION_DESIGN.md
 !docs/DEVELOPMENT_JOURNAL.md
 !docs/DURABLE_ENGINEERING_LOOP_DESIGN.md
 !docs/DURABLE_SUPERVISOR_WALKTHROUGH.md

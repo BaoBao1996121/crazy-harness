@@ -178,3 +178,56 @@ def test_openapi_publishes_parent_loop_surface_without_trusted_contract_fields(t
     assert "metric" not in properties
     assert "worker" not in properties
     assert "initial_state_ref" not in properties
+
+
+def test_dsh_v1_handshake_and_loop_read_are_versioned_pure_and_fail_closed(tmp_path) -> None:
+    app = create_app(tmp_path, background=False)
+    runtime = app.state.runtime
+    with TestClient(app) as client:
+        loop_id = client.post(
+            "/api/engineering-loops", json=_request("dsh-v1-loop-read-1")
+        ).json()["loop_id"]
+        before = len(runtime.store.read_records())
+
+        capabilities = client.get("/api/integrations/dsh/v1/capabilities")
+        fetched = client.get(
+            f"/api/integrations/dsh/v1/engineering-loops/{loop_id}"
+        )
+        missing = client.get(
+            "/api/integrations/dsh/v1/engineering-loops/loop_missing"
+        )
+        after = len(runtime.store.read_records())
+
+    assert capabilities.status_code == 200
+    assert capabilities.json() == {
+        "protocol_version": "crazy-dsh-v1",
+        "control_plane_version": "0.10.0-dev",
+        "transport": "http-json",
+        "capabilities": ["engineering_loop.read"],
+    }
+    assert fetched.status_code == 200
+    assert fetched.json() == {
+        "loop_id": loop_id,
+        "title": "Repository quality climb",
+        "objective": "Repair then improve",
+        "status": "running",
+        "active_score": None,
+        "iteration_count": 0,
+        "child_run_ids": [],
+        "terminal_reason": None,
+    }
+    assert "contract" not in fetched.json()
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == {
+        "code": "engineering_loop_not_found",
+        "message": "engineering loop not found",
+        "retryable": False,
+    }
+    assert after == before
+
+    schema = app.openapi()
+    assert "/api/integrations/dsh/v1/capabilities" in schema["paths"]
+    assert (
+        "/api/integrations/dsh/v1/engineering-loops/{loop_id}"
+        in schema["paths"]
+    )
