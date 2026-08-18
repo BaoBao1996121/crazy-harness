@@ -64,14 +64,11 @@ const dependencySections = [
   'optionalDependencies',
   'peerDependencies',
 ] as const
+// Cross-volume pnpm installs may copy the eight-package closure instead of
+// hard-linking it; keep this deadline separate from the lightweight CLI calls.
+const DSH_PLUGIN_ADD_TIMEOUT_MS = 20_000
 
-async function packPackage(packageDir: string, archivePath: string): Promise<PackageArchive> {
-  const manifest = JSON.parse(
-    readFileSync(join(packageDir, 'package.json'), 'utf8'),
-  ) as PackageManifest
-  if (manifest.version === undefined) {
-    throw new Error(`${packageDir} must declare a version before packing`)
-  }
+function requirePnpmCli(): string {
   const pnpmCli = process.env.npm_execpath
   if (
     pnpmCli === undefined
@@ -82,8 +79,37 @@ async function packPackage(packageDir: string, archivePath: string): Promise<Pac
       'pnpm JavaScript CLI unavailable; run this contract through `pnpm test`',
     )
   }
+  return pnpmCli
+}
+
+async function resolveWorkspaceStore(workspaceRoot: string): Promise<string> {
   const result = await runNodeCommand([
-    pnpmCli,
+    requirePnpmCli(),
+    'store',
+    'path',
+    '--silent',
+  ], {
+    cwd: workspaceRoot,
+    timeoutMs: DSH_CLI_TIMEOUT_MS,
+  })
+  const storeDir = result.stdout.trim()
+  if (result.status !== 0 || storeDir.length === 0 || !existsSync(storeDir)) {
+    throw new Error(
+      `unable to resolve the workspace pnpm store\n${result.stdout}\n${result.stderr}`,
+    )
+  }
+  return storeDir
+}
+
+async function packPackage(packageDir: string, archivePath: string): Promise<PackageArchive> {
+  const manifest = JSON.parse(
+    readFileSync(join(packageDir, 'package.json'), 'utf8'),
+  ) as PackageManifest
+  if (manifest.version === undefined) {
+    throw new Error(`${packageDir} must declare a version before packing`)
+  }
+  const result = await runNodeCommand([
+    requirePnpmCli(),
     'pack',
     '--out',
     archivePath,
@@ -171,9 +197,27 @@ describe('@crazy-harness/dsh-bundle', () => {
       'lib',
       'bin.js',
     )
+    const workspaceStore = await resolveWorkspaceStore(workspaceRoot)
     const dshHome = mkdtempSync(join(tmpdir(), 'crazy-dsh-contract-'))
     const artifactsDir = join(dshHome, 'artifacts')
+    const isolatedPnpmHome = join(dshHome, 'pnpm-home')
     mkdirSync(artifactsDir)
+    mkdirSync(isolatedPnpmHome)
+    // A Windows temp profile may live on another drive, where pnpm would
+    // otherwise select an empty store and break this offline contract.
+    const profileEnv: NodeJS.ProcessEnv = { ...process.env }
+    for (const key of Object.keys(profileEnv)) {
+      const normalizedKey = key.toLowerCase()
+      if (
+        normalizedKey === 'pnpm_config_store_dir'
+        || normalizedKey === 'npm_config_store_dir'
+      ) {
+        delete profileEnv[key]
+      }
+    }
+    profileEnv.DSH_HOME = dshHome
+    profileEnv.PNPM_HOME = isolatedPnpmHome
+    profileEnv.PNPM_CONFIG_STORE_DIR = workspaceStore
 
     try {
       const packageSources = [
@@ -196,7 +240,7 @@ describe('@crazy-harness/dsh-bundle', () => {
         '--offline',
       ], {
         cwd: workspaceRoot,
-        env: { ...process.env, DSH_HOME: dshHome },
+        env: profileEnv,
         timeoutMs: DSH_CLI_TIMEOUT_MS,
       })
 
@@ -231,8 +275,8 @@ describe('@crazy-harness/dsh-bundle', () => {
         bundleArchive.path,
       ], {
         cwd: workspaceRoot,
-        env: { ...process.env, DSH_HOME: dshHome },
-        timeoutMs: DSH_CLI_TIMEOUT_MS,
+        env: profileEnv,
+        timeoutMs: DSH_PLUGIN_ADD_TIMEOUT_MS,
       })
 
       expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0)
@@ -243,7 +287,7 @@ describe('@crazy-harness/dsh-bundle', () => {
         '--dump-config',
       ], {
         cwd: workspaceRoot,
-        env: { ...process.env, DSH_HOME: dshHome },
+        env: profileEnv,
         timeoutMs: DSH_CLI_TIMEOUT_MS,
       })
 
@@ -288,7 +332,7 @@ describe('@crazy-harness/dsh-bundle', () => {
         installAnchor,
       ], {
         cwd: workspaceRoot,
-        env: { ...process.env, DSH_HOME: dshHome },
+        env: profileEnv,
         timeoutMs: DSH_BOOT_TIMEOUT_MS,
       })
       expect(bootResult.status, `${bootResult.stdout}\n${bootResult.stderr}`).toBe(0)
